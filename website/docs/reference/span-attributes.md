@@ -21,6 +21,7 @@ A test (`tests/unit/test_span_attributes_docs.py`) fails if the code sets an att
 | `service.version` | Plugin version, read from the shipped `plugin.yaml` |
 | `process.pid` | Process id |
 | `openinference.project.name` | `project_name` / `OTEL_PROJECT_NAME` (the Phoenix project); optional |
+| `hermes.kanban.task_id`, `hermes.kanban.board`, `hermes.kanban.run_id` | The kanban card, its board and the attempt a dispatcher-spawned worker is running, from `HERMES_KANBAN_TASK` / `_BOARD` / `_RUN_ID`. Only when the task is set: Hermes pins the board into every chat's environment, so the board alone never marks a worker |
 | `host.name` | Hostname, only when `host_metrics: true` |
 | `wandb.entity`, `wandb.project` | W&B Weave routing (when configured) |
 | `telemetry.sdk.*` | Set by the OTel SDK |
