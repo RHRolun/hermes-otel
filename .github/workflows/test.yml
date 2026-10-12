@@ -29,6 +29,8 @@ jobs:
         run: uv run --extra dev ruff check .
       - name: Black format check
         run: uv run --extra dev black --check .
+      - name: Telemetry vocabulary is current (semconv.generated.ts, span-attributes.md, #404)
+        run: uv run python scripts/gen_semconv.py --check
 
   plugin-scan:
     # Hermes scans a plugin's file tree before install; one `critical` finding
