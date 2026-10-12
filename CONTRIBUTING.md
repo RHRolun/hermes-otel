@@ -212,6 +212,21 @@ attribute. Ids, timestamps, durations and the process identity are normalised
 - **A refactor PR may not change a golden file.** If a change is deliberate (a bug
   found on the way), re-record and list every changed line in the PR description.
 
+### Resolution snapshot (#409)
+
+`tests/unit/test_golden_resolution.py` records, for every backend type and
+every adapter alias under six input paths (inline credentials, `*_env`
+credentials, env-only selection, signal overrides, temporality + root_usage
+overrides, a per-backend `logs:` block), what the exporter resolves, which log
+exporter it gets, its Settings card, its MCP query target, its `status` line
+and its dashboard adapter, into `tests/golden/resolution/<type>__<path>.json`,
+plus the whole settings report for `config.yaml.example`. Secrets are
+placeholders and masked. `UPDATE_GOLDEN=1 pytest tests/unit/test_golden_resolution.py`
+re-records; a refactor PR that changes a fixture lists every changed line. The
+same module holds the cross-registry consistency checks (exporter types vs
+adapter `handles`, `signal_support()` vs adapter capabilities, env vars read vs
+`KNOWN_ENV_VARS`), marked `xfail(strict=True)` while #402 is open.
+
 ### Adapter goldens
 
 `tests/golden/adapters/<type>/` holds, per dashboard adapter, the backend
