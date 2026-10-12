@@ -24,9 +24,9 @@ from . import register
 from .base import (
     BackendAdapter,
     BackendError,
-    ConfigError,
     LogFilter,
     StructuredFilter,
+    bearer,
     bucketize,
     counter_increases,
     finish_log_row,
@@ -37,8 +37,10 @@ from .base import (
     ns_from_any,
     ns_from_magnitude,
     otlp_status,
+    query_origin,
+    rejected_request,
+    require_credential,
     resolve_env_or_literal,
-    rewrite_host_for_docker,
     strictly_older,
     strictly_older_traces,
     trace_end_bound,
@@ -204,12 +206,7 @@ class SigNozAdapter(BackendAdapter):
 
     def __init__(self, cfg: Dict[str, Any]):
         super().__init__(cfg)
-        endpoint = cfg.get("endpoint") or ""
-        parsed = _urlparse.urlparse(endpoint)
-        host = parsed.hostname or "localhost"
-        scheme = parsed.scheme or "http"
-        port = cfg.get("query_port") or _DEFAULT_SIGNOZ_PORT
-        self.query_url = f"{scheme}://{rewrite_host_for_docker(host)}:{port}"
+        self.query_url = query_origin(cfg, _DEFAULT_SIGNOZ_PORT)
         self.api_key = resolve_env_or_literal(cfg, "api_key", "api_key_env")
         # The metrics catalog, once per instance (instances are cached while
         # the config is unchanged, #290): one request per chart, not two.
@@ -217,7 +214,6 @@ class SigNozAdapter(BackendAdapter):
 
     def status(self) -> Dict[str, Any]:
         base = super().status()
-        base["query_url"] = self.query_url
         base["auth_required"] = self.api_key is None
         if self.api_key is None:
             base["auth_hint"] = (
@@ -230,15 +226,15 @@ class SigNozAdapter(BackendAdapter):
     # ── HTTP helpers ─────────────────────────────────────────────────
 
     def _headers(self) -> Dict[str, str]:
-        if not self.api_key:
-            raise ConfigError(
-                "SigNoz requires an api_key. Add api_key or api_key_env "
-                "to the signoz backend entry in config.yaml."
-            )
+        key = require_credential(
+            self.api_key,
+            "SigNoz requires an api_key. Add api_key or api_key_env "
+            "to the signoz backend entry in config.yaml.",
+        )
         # A personal access token is honoured as ``SIGNOZ-API-KEY``; a session
         # JWT (what ``/api/v2/sessions/email_password`` returns) only as a
         # Bearer. Send both so either kind of key works (verified on v0.119).
-        return {"SIGNOZ-API-KEY": self.api_key, "Authorization": f"Bearer {self.api_key}"}
+        return {"SIGNOZ-API-KEY": key, **bearer(key)}
 
     # ── Query-builder JSON construction ──────────────────────────────
 
@@ -428,7 +424,7 @@ class SigNozAdapter(BackendAdapter):
         except BackendError as exc:
             if exc.kind == "not_found":
                 raise not_found(trace_id, "SigNoz")
-            if exc.kind != "backend" or "Backend returned 4" not in str(exc.detail):
+            if not rejected_request(exc):
                 raise
             data = http_post_json(
                 url,

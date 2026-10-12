@@ -65,11 +65,34 @@ ERROR_KINDS = ("not_found", "auth", "config", "request", "backend")
 
 
 class BackendError(HTTPException):
-    """An adapter could not get an answer; ``kind`` says why."""
+    """An adapter could not get an answer; ``kind`` says why. ``http_status``
+    is the status the backend itself answered with (``None`` when the failure
+    was not an HTTP answer), so a caller can tell a refused request from an
+    outage without parsing the message (see :func:`rejected_request`)."""
 
-    def __init__(self, status_code: int, detail: str, kind: str = "backend") -> None:
+    def __init__(
+        self,
+        status_code: int,
+        detail: str,
+        kind: str = "backend",
+        http_status: Optional[int] = None,
+    ) -> None:
         super().__init__(status_code=status_code, detail=detail)
         self.kind = kind if kind in ERROR_KINDS else "backend"
+        self.http_status = http_status
+
+
+def rejected_request(exc: BaseException) -> bool:
+    """True when the backend answered a 4xx that was neither auth nor
+    not-found: the request's shape was refused (an older Tempo rejecting a
+    ``select()`` pipeline, OpenObserve refusing an unknown column, SigNoz
+    refusing a GET), so a differently shaped retry may succeed. An outage, a
+    timeout or a 5xx never is: a second request would only hit a dead backend
+    twice (#296)."""
+    status = getattr(exc, "http_status", None)
+    if getattr(exc, "kind", None) != "backend" or not isinstance(status, int):
+        return False
+    return 400 <= status < 500
 
 
 class ConfigError(BackendError):
@@ -132,6 +155,79 @@ def resolve_env_or_literal(cfg: Dict[str, Any], literal_key: str, env_key: str) 
         if v:
             return v
     return None
+
+
+def query_origin(
+    cfg: Dict[str, Any], default_port: Optional[int], *, endpoint_port: str = "ignore"
+) -> str:
+    """``scheme://host[:port]`` of the backend's read API, from the entry.
+
+    The host (loopback rewritten for a container) and the scheme come from the
+    OTLP ``endpoint``; the port is ``query_port`` on the entry, else:
+
+    * ``endpoint_port="ignore"`` — the type's default (the read API has a port
+      of its own: Phoenix 6006, SigNoz 3301, the Aspire UI 18888, ...);
+    * ``endpoint_port="fallback"`` — the endpoint's own port, then the default
+      (stores whose read API shares the OTLP port: GreptimeDB's 4000,
+      VictoriaTraces' 10428, Gigapipe's 3100, a Jaeger behind one gateway);
+    * ``endpoint_port="first"`` — the endpoint's port even over ``query_port``
+      (Langfuse, whose base URL is the UI).
+
+    With no default and no port anywhere the origin carries none (Agenta's
+    cloud hosts).
+    """
+    parsed = _urlparse.urlparse(str(cfg.get("endpoint") or ""))
+    host = rewrite_host_for_docker(parsed.hostname or "localhost")
+    scheme = parsed.scheme or "http"
+    if endpoint_port == "first":
+        port = parsed.port or cfg.get("query_port") or default_port
+    elif endpoint_port == "fallback":
+        port = cfg.get("query_port") or parsed.port or default_port
+    else:
+        port = cfg.get("query_port") or default_port
+    return f"{scheme}://{host}:{port}" if port else f"{scheme}://{host}"
+
+
+def basic_auth(user: Optional[str], password: Optional[str]) -> Dict[str, str]:
+    """``Authorization: Basic`` for ``user:password`` (an empty password is fine)."""
+    import base64
+
+    token = base64.b64encode(f"{user}:{password or ''}".encode("utf-8")).decode("ascii")
+    return {"Authorization": f"Basic {token}"}
+
+
+def bearer(token: Optional[str]) -> Dict[str, str]:
+    """``Authorization: Bearer`` when there is a token, else no header."""
+    return {"Authorization": f"Bearer {token}"} if token else {}
+
+
+def require_credential(value: Optional[str], detail: str) -> str:
+    """``value``, or the ``config`` error ``detail`` (what is missing and how
+    to set it) when the entry has none: nothing is sent to the backend."""
+    if not value:
+        raise ConfigError(detail)
+    return value
+
+
+# ── Probe caches (#403) ────────────────────────────────────────────────
+#
+# An adapter that learns something about a server once per process (which
+# API version it speaks, which GraphQL arguments it takes, a table's columns)
+# keeps it in a module-level dict and registers it here, so every cache is
+# cleared together (``clear_probe_caches``) and none leaks across tests or a
+# config reload.
+
+_PROBE_CACHES: List[Dict[Any, Any]] = []
+
+
+def register_cache(cache: Dict[Any, Any]) -> Dict[Any, Any]:
+    _PROBE_CACHES.append(cache)
+    return cache
+
+
+def clear_probe_caches() -> None:
+    for cache in _PROBE_CACHES:
+        cache.clear()
 
 
 # ── Structured filter the UI sends to every adapter ────────────────────
@@ -462,8 +558,12 @@ class BackendAdapter:
 
     # Reported in /status so the frontend can label the raw input and
     # show the active backend URL. Subclasses typically add ``query_url``.
+    # The read API's origin (see :func:`query_origin`); every adapter sets it
+    # in ``__init__`` and ``status()`` reports it.
+    query_url: str = ""
+
     def status(self) -> Dict[str, Any]:
-        return {
+        out = {
             "type": self.cfg.get("type"),
             "name": self.cfg.get("name") or self.cfg.get("type"),
             "query_lang_label": self.query_lang_label,
@@ -472,6 +572,9 @@ class BackendAdapter:
             "logs": self.supports_logs,
             "filters": filter_support_of(self),
         }
+        if self.query_url:
+            out["query_url"] = self.query_url
+        return out
 
     def search(self, f: StructuredFilter, start_s: int, end_s: int, limit: int) -> Dict[str, Any]:
         """``{traces: [...], has_more, next_before_ns}`` (see :func:`trace_page`):
@@ -837,11 +940,23 @@ def _record_exchange(req: Any, status: Optional[int], body: Optional[bytes]) -> 
         pass
 
 
-def _execute(req: _urlrequest.Request, timeout: float) -> Any:
+def _execute(
+    req: _urlrequest.Request,
+    timeout: float,
+    *,
+    raw: bool = False,
+    label: str = "Backend",
+    auth_codes: Tuple[int, ...] = (401, 403),
+    not_found_is_backend: bool = False,
+) -> Any:
     """Send one request; every failure is a :class:`BackendError` with a kind.
 
-    404 → ``not_found``, 401/403 → ``auth``, any other HTTP error, a network
-    error, a timeout or a non-JSON body → ``backend``.
+    404 → ``not_found`` (or ``backend`` with ``not_found_is_backend``, for a
+    query-language store whose 404 is a bad query, never a missing trace), the
+    ``auth_codes`` → ``auth``, any other HTTP error, a network error, a timeout
+    or a non-JSON body → ``backend``; an HTTP answer's status is on the error
+    as ``http_status``. ``raw`` returns the body as bytes instead of parsed
+    JSON (VictoriaLogs' NDJSON); ``label`` names the backend in the messages.
     """
     try:
         with _urlrequest.urlopen(req, timeout=timeout) as resp:
@@ -853,24 +968,26 @@ def _execute(req: _urlrequest.Request, timeout: float) -> Any:
             detail = str(e)
         _record_exchange(req, e.code, detail.encode("utf-8"))
         excerpt = _error_body(detail)
-        if e.code == 404:
-            raise BackendError(404, f"Backend returned 404: {excerpt}", "not_found")
-        if e.code in (401, 403):
+        if e.code == 404 and not not_found_is_backend:
+            raise BackendError(404, f"{label} returned 404: {excerpt}", "not_found", e.code)
+        if e.code in auth_codes:
             raise BackendError(
-                503, f"Backend rejected the credentials ({e.code}): {excerpt}", "auth"
+                503, f"{label} rejected the credentials ({e.code}): {excerpt}", "auth", e.code
             )
-        raise BackendError(502, f"Backend returned {e.code}: {excerpt}")
+        raise BackendError(502, f"{label} returned {e.code}: {excerpt}", "backend", e.code)
     except _urlerror.URLError as e:
-        raise BackendError(502, f"Backend unreachable: {e.reason}")
+        raise BackendError(502, f"{label} unreachable: {e.reason}")
     except Exception as e:
-        raise BackendError(502, f"Backend query failed: {e}")
+        raise BackendError(502, f"{label} query failed: {e}")
     _record_exchange(req, 200, body)
+    if raw:
+        return body
     if not body:
         return None
     try:
         return json.loads(body.decode("utf-8"))
     except Exception as e:
-        raise BackendError(502, f"Backend returned non-JSON: {e}")
+        raise BackendError(502, f"{label} returned non-JSON: {e}")
 
 
 def http_get_json(url: str, headers: Optional[Dict[str, str]] = None, timeout: float = 10.0) -> Any:

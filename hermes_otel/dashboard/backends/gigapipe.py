@@ -44,6 +44,7 @@ from .base import (
     http_get_json,
     log_end_ns,
     not_found,
+    query_origin,
     root_of,
     severity_number_for,
     span_matches,
@@ -81,12 +82,6 @@ _LEVELS_AT_LEAST = {
 _ROW_LABELS = frozenset(
     {"level", "trace_id", "span_id", "hermes_session_id", "event_name", "service_name", "flags"}
 )
-
-
-def _origin(url: str) -> str:
-    parsed = _urlparse.urlparse(url)
-    port = f":{parsed.port}" if parsed.port else ""
-    return f"{parsed.scheme or 'http'}://{parsed.hostname or 'localhost'}{port}"
 
 
 def _typed_attrs(items: Any) -> Dict[str, Any]:
@@ -144,12 +139,9 @@ class GigapipeAdapter(TempoAdapter):
 
     def __init__(self, cfg: Dict[str, Any]):
         cfg = dict(cfg)
-        endpoint = str(cfg.get("endpoint") or "")
-        parsed = _urlparse.urlparse(endpoint)
-        port = cfg.get("query_port") or parsed.port or _DEFAULT_PORT
-        cfg["query_port"] = port
-        origin = _origin(f"{parsed.scheme or 'http'}://{parsed.hostname or 'localhost'}:{port}")
-        # Every API on the one port unless the entry says otherwise.
+        # Every API on the one port (the ingest port) unless the entry says otherwise.
+        origin = query_origin(cfg, _DEFAULT_PORT, endpoint_port="fallback")
+        cfg["query_port"] = _urlparse.urlparse(origin).port
         cfg.setdefault("prometheus_url", origin)
         cfg.setdefault("loki_url", origin)
         super().__init__(cfg)

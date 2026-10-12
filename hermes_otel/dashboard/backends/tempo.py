@@ -34,7 +34,8 @@ from .base import (
     StructuredFilter,
     http_get_json,
     not_found,
-    rewrite_host_for_docker,
+    query_origin,
+    rejected_request,
     strictly_older_traces,
     trace_end_bound,
     trace_page,
@@ -149,13 +150,9 @@ class TempoAdapter(BackendAdapter):
 
     def __init__(self, cfg: Dict[str, Any]):
         super().__init__(cfg)
-        endpoint = cfg.get("endpoint") or ""
-        parsed = _urlparse.urlparse(endpoint)
-        host = parsed.hostname or "localhost"
-        scheme = parsed.scheme or "http"
-        port = cfg.get("query_port") or _DEFAULT_TEMPO_QUERY_PORT
-        host = rewrite_host_for_docker(host)
-        self.query_url = f"{scheme}://{host}:{port}"
+        self.query_url = query_origin(cfg, _DEFAULT_TEMPO_QUERY_PORT)
+        origin = _urlparse.urlparse(self.query_url)
+        scheme, host = origin.scheme, origin.hostname or "localhost"
         # Metrics and logs: on for ``lgtm`` (the stack ships Prometheus + Loki
         # next to Tempo) and for any entry that points at them explicitly.
         is_stack = cfg.get("type") == "lgtm"
@@ -179,7 +176,6 @@ class TempoAdapter(BackendAdapter):
 
     def status(self) -> Dict[str, Any]:
         base = super().status()
-        base["query_url"] = self.query_url
         if self.prometheus_url:
             base["prometheus_url"] = self.prometheus_url
         if self.loki_url:
@@ -328,9 +324,8 @@ class TempoAdapter(BackendAdapter):
         except BackendError as exc:
             # Older Tempo builds reject the ``| select()`` pipeline with a 4xx;
             # retry the same predicates without it. Anything else (unreachable,
-            # auth, 5xx) is reported as is: a second request would only hit a
-            # dead backend twice and could not improve the answer (#296).
-            if exc.kind != "backend" or "Backend returned 4" not in str(exc.detail):
+            # auth, 5xx) is reported as is (#296).
+            if not rejected_request(exc):
                 raise
             params = self._search_params(
                 f, start_s, end_s, limit, self._build_traceql(f, with_select=False)

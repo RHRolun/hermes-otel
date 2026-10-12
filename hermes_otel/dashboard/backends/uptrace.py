@@ -42,10 +42,10 @@ from ._attrs import oo_col as _underscored
 from .base import (
     BackendAdapter,
     BackendError,
-    ConfigError,
     HTTPException,
     LogFilter,
     StructuredFilter,
+    bearer,
     bucketize,
     counter_increases,
     finish_log_row,
@@ -53,8 +53,10 @@ from .base import (
     log_end_ns,
     not_found,
     otlp_status,
+    query_origin,
+    register_cache,
+    require_credential,
     resolve_env_or_literal,
-    rewrite_host_for_docker,
     strictly_older,
     strictly_older_traces,
     trace_end_bound,
@@ -106,7 +108,7 @@ _DIALECTS: Dict[str, Dict[str, Any]] = {
         "logger_params": (),
     },
 }
-_DIALECT_CACHE: Dict[str, str] = {}
+_DIALECT_CACHE: Dict[str, str] = register_cache({})
 
 # The card attributes in the underscored form Uptrace stores them; the
 # session keys follow the status in the card (see ``_search_hit``).
@@ -235,18 +237,16 @@ class UptraceAdapter(BackendAdapter):
 
     def __init__(self, cfg: Dict[str, Any]):
         super().__init__(cfg)
-        base = _extract_dsn(resolve_env_or_literal(cfg, "dsn", "dsn_env"))
-        endpoint = cfg.get("endpoint") or ""
-        if endpoint:
-            parsed = _urlparse.urlparse(endpoint)
-            base = (
-                f"{parsed.scheme or 'http'}://{parsed.hostname or 'localhost'}:"
-                f"{cfg.get('query_port') or _DEFAULT_UPTRACE_HTTP_PORT}"
-            )
-        if base:
-            parsed = _urlparse.urlparse(base)
-            base = f"{parsed.scheme}://{rewrite_host_for_docker(parsed.hostname or 'localhost')}:{parsed.port}"
-        self.query_url = base or ""
+        # The server: the OTLP endpoint with the query port, else the DSN's
+        # host and port (a DSN alone names the server too), else nothing (a
+        # ``config`` error when a query is attempted).
+        dsn_base = _extract_dsn(resolve_env_or_literal(cfg, "dsn", "dsn_env"))
+        if cfg.get("endpoint"):
+            self.query_url = query_origin(cfg, _DEFAULT_UPTRACE_HTTP_PORT)
+        elif dsn_base:
+            self.query_url = query_origin({"endpoint": dsn_base}, None, endpoint_port="first")
+        else:
+            self.query_url = ""
         self.token = (
             resolve_env_or_literal(cfg, "user_token", "user_token_env")
             or os.environ.get("UPTRACE_USER_TOKEN", "").strip()
@@ -268,7 +268,7 @@ class UptraceAdapter(BackendAdapter):
 
     def status(self) -> Dict[str, Any]:
         base = super().status()
-        base["query_url"] = self.query_url
+        base["query_url"] = self.query_url  # reported even when empty: it says what is missing
         base["project_id"] = self.project_id
         base["service_name"] = self.service_name
         base["auth_required"] = self.token is None
@@ -288,13 +288,14 @@ class UptraceAdapter(BackendAdapter):
     # ── HTTP ──────────────────────────────────────────────────────────
 
     def _headers(self) -> Dict[str, str]:
-        if not self.query_url:
-            raise ConfigError(
-                "The uptrace backend entry names no server: set endpoint (or dsn / dsn_env)."
-            )
-        if not self.token:
-            raise ConfigError("Uptrace requires a user token. Set user_token or user_token_env.")
-        return {"Authorization": f"Bearer {self.token}"}
+        require_credential(
+            self.query_url,
+            "The uptrace backend entry names no server: set endpoint (or dsn / dsn_env).",
+        )
+        token = require_credential(
+            self.token, "Uptrace requires a user token. Set user_token or user_token_env."
+        )
+        return bearer(token)
 
     def _dialect(self) -> Dict[str, Any]:
         """Which spelling of the API this server speaks; probed once per process.

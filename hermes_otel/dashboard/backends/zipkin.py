@@ -32,12 +32,13 @@ from .base import (
     BackendAdapter,
     BackendError,
     StructuredFilter,
+    bearer,
     http_get_json,
     not_found,
     otlp_status,
     parse_kv_tokens,
+    query_origin,
     resolve_env_or_literal,
-    rewrite_host_for_docker,
     root_of,
     span_matches,
     strictly_older_traces,
@@ -134,23 +135,18 @@ class ZipkinAdapter(BackendAdapter):
 
     def __init__(self, cfg: Dict[str, Any]):
         super().__init__(cfg)
-        endpoint = cfg.get("endpoint") or ""
-        parsed = _urlparse.urlparse(endpoint)
-        host = parsed.hostname or "localhost"
-        scheme = parsed.scheme or "http"
-        port = cfg.get("query_port") or parsed.port or _DEFAULT_ZIPKIN_PORT
-        self.query_url = f"{scheme}://{rewrite_host_for_docker(host)}:{port}"
+        # The query API shares the port the zipkin-otel module ingests on.
+        self.query_url = query_origin(cfg, _DEFAULT_ZIPKIN_PORT, endpoint_port="fallback")
         self.api_key = resolve_env_or_literal(cfg, "api_key", "api_key_env")
         self.default_service = default_service_name(cfg)
 
     def status(self) -> Dict[str, Any]:
         base = super().status()
-        base["query_url"] = self.query_url
         base["default_service"] = self.default_service
         return base
 
     def _headers(self) -> Dict[str, str]:
-        return {"Authorization": f"Bearer {self.api_key}"} if self.api_key else {}
+        return bearer(self.api_key)
 
     # ── Filter translation ───────────────────────────────────────────
 

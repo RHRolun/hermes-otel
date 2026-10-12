@@ -15,18 +15,19 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
-from urllib import parse as _urlparse
 
 from . import register
 from .base import (
     BackendAdapter,
     BackendError,
     StructuredFilter,
+    bearer,
     http_post_json,
     not_found,
     otlp_status,
+    query_origin,
+    register_cache,
     resolve_env_or_literal,
-    rewrite_host_for_docker,
     strictly_older_traces,
     trace_end_bound,
     trace_page,
@@ -75,7 +76,7 @@ def _ns_to_iso(ns: int) -> str:
 # ``orphanSpanAsRootSpan``: Phoenix 20.x dropped both (``parent_id is None``
 # in the filter condition is the replacement, verified on 20.20.0,
 # 2026-10-09); older builds still have them. Probed once per query URL.
-_ROOT_ARGS_CACHE: Dict[str, bool] = {}
+_ROOT_ARGS_CACHE: Dict[str, bool] = register_cache({})
 
 _SPANS_ARGS_QUERY = '{ __type(name: "Project") { fields { name args { name } } } }'
 
@@ -101,12 +102,7 @@ class PhoenixAdapter(BackendAdapter):
 
     def __init__(self, cfg: Dict[str, Any]):
         super().__init__(cfg)
-        endpoint = cfg.get("endpoint") or ""
-        parsed = _urlparse.urlparse(endpoint)
-        host = parsed.hostname or "localhost"
-        scheme = parsed.scheme or "http"
-        port = cfg.get("query_port") or _DEFAULT_PHOENIX_PORT
-        self.query_url = f"{scheme}://{rewrite_host_for_docker(host)}:{port}"
+        self.query_url = query_origin(cfg, _DEFAULT_PHOENIX_PORT)
         self.graphql_url = f"{self.query_url}/graphql"
         # Precedence: backend-entry override > top-level project_name.
         # The top-level key matches the key the plugin uses elsewhere for
@@ -127,7 +123,6 @@ class PhoenixAdapter(BackendAdapter):
 
     def status(self) -> Dict[str, Any]:
         base = super().status()
-        base["query_url"] = self.query_url
         base["project_name"] = self.project_name
         base["project_resolved"] = self.resolved_project_name
         base["project_fallback"] = self.project_fallback
@@ -136,13 +131,10 @@ class PhoenixAdapter(BackendAdapter):
     # ── GraphQL helpers ───────────────────────────────────────────────
 
     def _gql(self, query: str, variables: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        headers: Dict[str, str] = {}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
         body = {"query": query}
         if variables is not None:
             body["variables"] = variables
-        resp = http_post_json(self.graphql_url, body, headers=headers, timeout=15.0)
+        resp = http_post_json(self.graphql_url, body, headers=bearer(self.api_key), timeout=15.0)
         if not isinstance(resp, dict):
             raise BackendError(502, "Phoenix returned non-object")
         if resp.get("errors"):

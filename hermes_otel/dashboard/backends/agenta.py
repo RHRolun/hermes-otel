@@ -25,19 +25,18 @@ from __future__ import annotations
 import copy
 import datetime as _dt
 from typing import Any, Dict, List, Optional
-from urllib import parse as _urlparse
 
 from . import default_service_name, register
 from .base import (
     BackendAdapter,
-    ConfigError,
     StructuredFilter,
     http_post_json,
     mark_full_fetch,
     not_found,
     parse_kv_tokens,
+    query_origin,
+    require_credential,
     resolve_env_or_literal,
-    rewrite_host_for_docker,
     strictly_older_traces,
     trace_end_bound,
     trace_page,
@@ -107,11 +106,10 @@ class AgentaAdapter(BackendAdapter):
         super().__init__(cfg)
         region = str(cfg.get("region") or "us").strip().lower()
         endpoint = str(cfg.get("endpoint") or _CLOUD.get(region, _CLOUD["us"]))
-        parsed = _urlparse.urlparse(endpoint)
-        host = rewrite_host_for_docker(parsed.hostname or "localhost")
-        port = f":{parsed.port}" if parsed.port else ""
-        self.query_url = f"{parsed.scheme or 'http'}://{host}{port}"
-        self.api_url = f"{self.query_url}/api"
+        # The cloud hosts carry no port; a self-hosted entry's endpoint does.
+        origin = query_origin({**cfg, "endpoint": endpoint}, None, endpoint_port="first")
+        self.api_url = f"{origin}/api"
+        self.query_url = self.api_url
         self.api_key = resolve_env_or_literal(cfg, "api_key", "api_key_env")
         if not self.api_key:
             import os
@@ -126,14 +124,14 @@ class AgentaAdapter(BackendAdapter):
 
     def status(self) -> Dict[str, Any]:
         base = super().status()
-        base["query_url"] = self.api_url
         base["default_service"] = self.default_service
         return base
 
     def _headers(self) -> Dict[str, str]:
-        if not self.api_key:
-            raise ConfigError("Agenta needs api_key / api_key_env (the project API key) to query")
-        return {"Authorization": f"ApiKey {self.api_key}"}
+        key = require_credential(
+            self.api_key, "Agenta needs api_key / api_key_env (the project API key) to query"
+        )
+        return {"Authorization": f"ApiKey {key}"}  # Agenta's own scheme, not a bearer
 
     def _query(self, body: Dict[str, Any], timeout: float = 20.0) -> List[Dict[str, Any]]:
         data = http_post_json(

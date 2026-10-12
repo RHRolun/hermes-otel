@@ -14,14 +14,14 @@
  "outcomes": {
   "get_trace": {
    "error": {
-    "detail": "ClickHouse rejected the credentials: {\"error\": \"bad token\"}",
+    "detail": "ClickHouse rejected the credentials (401): {\"error\": \"bad token\"}",
     "kind": "auth",
     "status_code": 503
    }
   },
   "search": {
    "error": {
-    "detail": "ClickHouse rejected the credentials: {\"error\": \"bad token\"}",
+    "detail": "ClickHouse rejected the credentials (401): {\"error\": \"bad token\"}",
     "kind": "auth",
     "status_code": 503
    }

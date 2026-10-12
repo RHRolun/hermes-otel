@@ -40,8 +40,8 @@ from .base import (
     http_get_json,
     log_end_ns,
     not_found,
+    query_origin,
     resolve_env_or_literal,
-    rewrite_host_for_docker,
     root_of,
     span_matches,
     strictly_older,
@@ -105,12 +105,7 @@ class AspireAdapter(BackendAdapter):
 
     def __init__(self, cfg: Dict[str, Any]):
         super().__init__(cfg)
-        endpoint = cfg.get("endpoint") or ""
-        parsed = _urlparse.urlparse(endpoint)
-        host = rewrite_host_for_docker(parsed.hostname or "localhost")
-        scheme = parsed.scheme or "http"
-        port = cfg.get("query_port") or _DEFAULT_UI_PORT
-        self.query_url = f"{scheme}://{host}:{port}"
+        self.query_url = query_origin(cfg, _DEFAULT_UI_PORT)
         self.api_key = resolve_env_or_literal(cfg, "api_key", "api_key_env")
         self.default_service = default_service_name(cfg)
         self.ui_url = (cfg.get("ui_url") or "").strip().rstrip("/") or self.query_url
@@ -125,11 +120,11 @@ class AspireAdapter(BackendAdapter):
 
     def status(self) -> Dict[str, Any]:
         base = super().status()
-        base["query_url"] = self.query_url
         base["default_service"] = self.default_service
         return base
 
     def _headers(self) -> Dict[str, str]:
+        # Aspire's own header, not a bearer.
         return {"x-api-key": self.api_key} if self.api_key else {}
 
     def _get(self, path: str, params: List[tuple], timeout: float = 20.0) -> Any:

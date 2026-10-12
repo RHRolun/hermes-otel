@@ -9,7 +9,6 @@ same keys it does on Tempo.
 
 from __future__ import annotations
 
-import base64
 import json
 import time
 from typing import Any, Dict, List, Optional
@@ -20,10 +19,10 @@ from ._attrs import dotted, oo_col
 from .base import (
     BackendAdapter,
     BackendError,
-    ConfigError,
     HTTPException,
     LogFilter,
     StructuredFilter,
+    basic_auth,
     bucketize,
     counter_increases,
     finish_log_row,
@@ -31,8 +30,10 @@ from .base import (
     http_post_json,
     not_found,
     otlp_status,
+    query_origin,
+    rejected_request,
+    require_credential,
     resolve_env_or_literal,
-    rewrite_host_for_docker,
     strictly_older,
     strictly_older_traces,
     trace_end_bound,
@@ -112,11 +113,7 @@ class OpenObserveAdapter(BackendAdapter):
     def __init__(self, cfg: Dict[str, Any]):
         super().__init__(cfg)
         endpoint = cfg.get("endpoint") or ""
-        parsed = _urlparse.urlparse(endpoint)
-        host = parsed.hostname or "localhost"
-        scheme = parsed.scheme or "http"
-        port = cfg.get("query_port") or _DEFAULT_OO_PORT
-        self.query_url = f"{scheme}://{rewrite_host_for_docker(host)}:{port}"
+        self.query_url = query_origin(cfg, _DEFAULT_OO_PORT)
         # Org is the first path segment in the endpoint, e.g.
         # ``/api/default/v1/traces`` → ``default``.
         self.org = cfg.get("org") or _extract_org(endpoint) or "default"
@@ -130,21 +127,19 @@ class OpenObserveAdapter(BackendAdapter):
 
     def status(self) -> Dict[str, Any]:
         base = super().status()
-        base["query_url"] = self.query_url
         base["org"] = self.org
         base["stream"] = self.stream
         base["auth_required"] = not (self.user and self.password)
         return base
 
     def _headers(self) -> Dict[str, str]:
-        if not (self.user and self.password):
-            raise ConfigError(
-                "OpenObserve requires basic auth credentials. Set "
-                "user + password (or *_env) on the openobserve "
-                "backend entry in config.yaml."
-            )
-        token = base64.b64encode(f"{self.user}:{self.password}".encode("utf-8")).decode("ascii")
-        return {"Authorization": f"Basic {token}"}
+        require_credential(
+            self.user and self.password,
+            "OpenObserve requires basic auth credentials. Set "
+            "user + password (or *_env) on the openobserve "
+            "backend entry in config.yaml.",
+        )
+        return basic_auth(self.user, self.password)
 
     # ── Query construction ───────────────────────────────────────────
 
@@ -286,7 +281,7 @@ class OpenObserveAdapter(BackendAdapter):
             try:
                 data = http_post_json(url, body, headers=self._headers(), timeout=15.0)
             except BackendError as e:
-                if e.kind != "backend" or "Backend returned 4" not in str(e.detail):
+                if not rejected_request(e):
                     raise  # unreachable, auth, config: no other spelling will help
                 last_err = e
                 continue

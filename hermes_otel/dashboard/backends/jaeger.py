@@ -28,12 +28,14 @@ from .base import (
     BackendAdapter,
     BackendError,
     StructuredFilter,
+    bearer,
     http_get_json,
     not_found,
     otlp_status,
     parse_kv_tokens,
+    query_origin,
+    register_cache,
     resolve_env_or_literal,
-    rewrite_host_for_docker,
     root_of,
     span_matches,
     strictly_older_traces,
@@ -76,7 +78,7 @@ def _tag_value(tag: Dict[str, Any]) -> Any:
 # Jaeger v2 serves only ``/api/v3/...`` on the query port (the classic routes
 # are 404, #245). The API is probed once per query URL; ``query_api: v1|v3``
 # on the entry pins it.
-_API_PROBE_CACHE: Dict[str, str] = {}
+_API_PROBE_CACHE: Dict[str, str] = register_cache({})
 
 
 def _rfc3339(ns: int) -> str:
@@ -199,12 +201,9 @@ class JaegerAdapter(BackendAdapter):
 
     def __init__(self, cfg: Dict[str, Any]):
         super().__init__(cfg)
-        endpoint = cfg.get("endpoint") or ""
-        parsed = _urlparse.urlparse(endpoint)
-        host = parsed.hostname or "localhost"
-        scheme = parsed.scheme or "http"
-        port = cfg.get("query_port") or parsed.port or self.default_query_port
-        self.query_url = f"{scheme}://{rewrite_host_for_docker(host)}:{port}"
+        # The endpoint's own port stands in for a missing ``query_port``: the
+        # stores that embed this API serve it on their OTLP port.
+        self.query_url = query_origin(cfg, self.default_query_port, endpoint_port="fallback")
         # Where ``/api/...`` hangs: the origin for Jaeger itself, a prefix for
         # stores that embed a Jaeger-compatible API (GreptimeDB's
         # ``/v1/jaeger``, #363). ``query_path`` on the entry overrides.
@@ -226,7 +225,6 @@ class JaegerAdapter(BackendAdapter):
 
     def status(self) -> Dict[str, Any]:
         base = super().status()
-        base["query_url"] = self.query_url
         base["default_service"] = self.default_service
         base["query_api"] = (
             self.query_api
@@ -293,10 +291,7 @@ class JaegerAdapter(BackendAdapter):
         return params
 
     def _headers(self) -> Dict[str, str]:
-        hdr: Dict[str, str] = {}
-        if self.api_key:
-            hdr["Authorization"] = f"Bearer {self.api_key}"
-        return hdr
+        return bearer(self.api_key)
 
     def _fetch_limit(self, limit: int) -> int:
         """Traces to ask for: one beyond the page, or the over-fetch size when

@@ -26,7 +26,6 @@ attributes appear in the detail view.
 
 from __future__ import annotations
 
-import base64
 import json
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
@@ -38,13 +37,16 @@ from .base import (
     BackendError,
     ConfigError,
     StructuredFilter,
+    basic_auth,
     http_get_json,
     not_found,
     otlp_attrs_from_dict,
     otlp_status,
     parse_kv_tokens,
+    query_origin,
+    register_cache,
+    require_credential,
     resolve_env_or_literal,
-    rewrite_host_for_docker,
     strictly_older_traces,
     trace_end_bound,
     trace_page,
@@ -83,7 +85,7 @@ _OBSERVATION_TYPES = {"tool": "TOOL", "api": "GENERATION", "llm": "GENERATION", 
 # ``sessionId``; no input/output/usage/metadata) and the v2 metrics API, which
 # answers token totals, cost, observation count and the model per trace. The
 # API is probed once per query URL; ``query_api: v3|v4`` on the entry pins it.
-_API_CACHE: Dict[str, str] = {}
+_API_CACHE: Dict[str, str] = register_cache({})
 _V2_OBSERVATIONS = "/api/public/v2/observations"
 _V2_METRICS = "/api/public/v2/metrics"
 _V4_FILTER_SUPPORT = {
@@ -212,13 +214,12 @@ class LangfuseAdapter(BackendAdapter):
 
     def __init__(self, cfg: Dict[str, Any]):
         super().__init__(cfg)
-        # Langfuse self-hosted typically lives on :3000 (Next.js).
+        # Langfuse self-hosted typically lives on :3000 (Next.js); the base URL
+        # is the UI's, so its own port wins.
         endpoint = cfg.get("endpoint") or cfg.get("base_url") or ""
-        parsed = _urlparse.urlparse(endpoint)
-        host = parsed.hostname or "localhost"
-        scheme = parsed.scheme or "http"
-        port = parsed.port or cfg.get("query_port") or _DEFAULT_LANGFUSE_PORT
-        self.query_url = f"{scheme}://{rewrite_host_for_docker(host)}:{port}"
+        self.query_url = query_origin(
+            {**cfg, "endpoint": endpoint}, _DEFAULT_LANGFUSE_PORT, endpoint_port="first"
+        )
         self.public_key = resolve_env_or_literal(cfg, "public_key", "public_key_env")
         self.secret_key = resolve_env_or_literal(cfg, "secret_key", "secret_key_env")
         # Langfuse keeps no resource attributes: the service a trace is shown
@@ -231,7 +232,6 @@ class LangfuseAdapter(BackendAdapter):
 
     def status(self) -> Dict[str, Any]:
         base = super().status()
-        base["query_url"] = self.query_url
         base["query_api"] = (
             self.query_api if self.query_api != "auto" else _API_CACHE.get(self.query_url, "auto")
         )
@@ -245,15 +245,12 @@ class LangfuseAdapter(BackendAdapter):
         return base
 
     def _headers(self) -> Dict[str, str]:
-        if not (self.public_key and self.secret_key):
-            raise ConfigError(
-                "Langfuse requires public_key + secret_key. Set them "
-                "(or *_env variants) on the langfuse backend entry."
-            )
-        token = base64.b64encode(f"{self.public_key}:{self.secret_key}".encode("utf-8")).decode(
-            "ascii"
+        require_credential(
+            self.public_key and self.secret_key,
+            "Langfuse requires public_key + secret_key. Set them "
+            "(or *_env variants) on the langfuse backend entry.",
         )
-        return {"Authorization": f"Basic {token}"}
+        return basic_auth(self.public_key, self.secret_key)
 
     # ── Filter translation ───────────────────────────────────────────
 

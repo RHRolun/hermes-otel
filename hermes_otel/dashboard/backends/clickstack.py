@@ -28,11 +28,9 @@ image's ``default`` user only answers from inside the container; its ``api`` /
 
 from __future__ import annotations
 
-import base64
 import json
 import re
 from typing import Any, Dict, List, Optional, Tuple
-from urllib import error as _urlerror
 from urllib import parse as _urlparse
 from urllib import request as _urlrequest
 
@@ -44,6 +42,8 @@ from .base import (
     BackendError,
     LogFilter,
     StructuredFilter,
+    _execute,
+    basic_auth,
     bucketize,
     counter_increases,
     finish_log_row,
@@ -51,8 +51,8 @@ from .base import (
     mark_full_fetch,
     not_found,
     otlp_status,
+    query_origin,
     resolve_env_or_literal,
-    rewrite_host_for_docker,
     strictly_older,
     strictly_older_traces,
     trace_end_bound,
@@ -135,12 +135,7 @@ class ClickstackAdapter(BackendAdapter):
 
     def __init__(self, cfg: Dict[str, Any]):
         super().__init__(cfg)
-        endpoint = cfg.get("endpoint") or ""
-        parsed = _urlparse.urlparse(endpoint)
-        host = rewrite_host_for_docker(parsed.hostname or "localhost")
-        scheme = parsed.scheme or "http"
-        port = cfg.get("query_port") or _DEFAULT_CLICKHOUSE_PORT
-        self.query_url = f"{scheme}://{host}:{port}"
+        self.query_url = query_origin(cfg, _DEFAULT_CLICKHOUSE_PORT)
         self.database = str(cfg.get("database") or _DEFAULT_DATABASE)
         self.user = resolve_env_or_literal(cfg, "user", "user_env")
         self.password = resolve_env_or_literal(cfg, "password", "password_env")
@@ -155,7 +150,6 @@ class ClickstackAdapter(BackendAdapter):
 
     def status(self) -> Dict[str, Any]:
         base = super().status()
-        base["query_url"] = self.query_url
         base["database"] = self.database
         base["default_service"] = self.default_service
         return base
@@ -165,13 +159,14 @@ class ClickstackAdapter(BackendAdapter):
     def _headers(self) -> Dict[str, str]:
         hdr = {"Content-Type": "text/plain; charset=utf-8"}
         if self.user is not None:
-            token = base64.b64encode(f"{self.user}:{self.password or ''}".encode()).decode()
-            hdr["Authorization"] = f"Basic {token}"
+            hdr.update(basic_auth(self.user, self.password))
         return hdr
 
     def _sql(self, sql: str, timeout: float = 30.0) -> List[Dict[str, Any]]:
         """Rows of one statement as dicts (``FORMAT JSON``); 64-bit integers
-        unquoted so counts and durations arrive as numbers."""
+        unquoted so counts and durations arrive as numbers. ClickHouse answers
+        a bad query with 400/404 and a text body, neither of which is "no such
+        trace", and a bad password with 516 as well as 401/403."""
         params = {
             "database": self.database,
             "default_format": "JSON",
@@ -181,30 +176,13 @@ class ClickstackAdapter(BackendAdapter):
         req = _urlrequest.Request(
             url, data=sql.encode("utf-8"), headers=self._headers(), method="POST"
         )
-        try:
-            with _urlrequest.urlopen(req, timeout=timeout) as resp:
-                body = resp.read()
-        except _urlerror.HTTPError as e:
-            try:
-                detail = e.read().decode("utf-8", errors="replace")
-            except Exception:
-                detail = str(e)
-            excerpt = " ".join(detail.split())[:300]
-            if e.code in (401, 403, 516):
-                raise BackendError(503, f"ClickHouse rejected the credentials: {excerpt}", "auth")
-            # ClickHouse answers a bad query with 400/404 and a text body;
-            # neither is "no such trace", so every error is a backend error.
-            raise BackendError(502, f"ClickHouse error: {excerpt}")
-        except _urlerror.URLError as e:
-            raise BackendError(502, f"ClickHouse unreachable: {e.reason}")
-        except Exception as e:
-            raise BackendError(502, f"ClickHouse query failed: {e}")
-        if not body.strip():
-            return []
-        try:
-            data = json.loads(body.decode("utf-8"))
-        except Exception as e:
-            raise BackendError(502, f"ClickHouse returned non-JSON: {e}")
+        data = _execute(
+            req,
+            timeout,
+            label="ClickHouse",
+            auth_codes=(401, 403, 516),
+            not_found_is_backend=True,
+        )
         rows = data.get("data") if isinstance(data, dict) else None
         return [r for r in (rows or []) if isinstance(r, dict)]
 
