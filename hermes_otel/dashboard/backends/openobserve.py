@@ -16,7 +16,7 @@ from typing import Any, Dict, List, Optional
 from urllib import parse as _urlparse
 
 from . import register
-from ._attrs import KNOWN_ATTRIBUTES, dotted, oo_col
+from ._attrs import dotted, oo_col
 from .base import (
     BackendAdapter,
     BackendError,
@@ -29,7 +29,6 @@ from .base import (
     finish_log_row,
     http_get_json,
     http_post_json,
-    otlp_attrs_from_dict,
     otlp_status,
     resolve_env_or_literal,
     rewrite_host_for_docker,
@@ -37,8 +36,7 @@ from .base import (
     strictly_older_traces,
     trace_page,
 )
-
-__all__ = ["OpenObserveAdapter", "HTTPException"]
+from .shapes import CARD_ATTRIBUTE_KEYS, card_row, group_by_service, otlp_batches, otlp_span
 
 _DEFAULT_OO_PORT = 5080
 # The trace detail asks for this many rows and says so when there are more.
@@ -70,35 +68,6 @@ def _severity_names_at_least(min_level: int) -> List[str]:
 def _like_escape(v: Any) -> str:
     """A LIKE pattern fragment: SQL-quoted, with ``%`` and ``_`` literal."""
     return _sql_escape(v).replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-
-
-# Columns the card renderer cares about. Expressed in Otel dot form;
-# ``_oo_col`` translates to OpenObserve's underscore form on the wire.
-_CARD_ATTR_KEYS = (
-    "llm.model_name",
-    "llm.provider",
-    "llm.api_mode",
-    "gen_ai.usage.input_tokens",
-    "gen_ai.usage.output_tokens",
-    "gen_ai.usage.total_tokens",
-    "llm.response.finish_reason",
-    "llm.response.tool_calls",
-    "tool.name",
-    "input.value",
-    "output.value",
-    "llm.output.content",
-    "hermes.session_id",
-    "hermes.turn.number",
-)
-
-
-_oo_col = oo_col
-
-
-# The attribute table and the column<->name mapping live in ``_attrs`` (shared
-# with the Loki and Uptrace adapters); the old names stay importable from here.
-_KNOWN_ATTRIBUTES = KNOWN_ATTRIBUTES
-_dotted = dotted
 
 
 def _sql_escape(v: Any) -> str:
@@ -225,7 +194,7 @@ class OpenObserveAdapter(BackendAdapter):
             # duration stored in microseconds in OpenObserve traces stream.
             clauses.append(f"duration >= {int(f.min_duration_ms) * 1000}")
         for k, v in f.attr_equals.items():
-            clauses.append(f"{_oo_col(k)} = '{_sql_escape(str(v))}'")
+            clauses.append(f"{oo_col(k)} = '{_sql_escape(str(v))}'")
         if f.free_text:
             # OpenObserve rejects a query naming a column the stream has not
             # seen (400 "unknown field"), so OR over the text columns that
@@ -338,30 +307,17 @@ class OpenObserveAdapter(BackendAdapter):
                 continue
             if client_roots and not self._is_root_row(row):
                 continue
-            start_ns = int(row.get("start_time") or 0)
-            duration_us = int(row.get("duration") or 0)
-            duration_ms = duration_us // 1000 if duration_us else 0
-
-            attrs_map = _row_to_card_attrs(row)
-            traces[trace_id] = {
-                "traceID": trace_id,
-                "rootServiceName": row.get("service_name") or "",
-                "rootTraceName": row.get("operation_name") or row.get("name") or "",
-                "startTimeUnixNano": str(start_ns) if start_ns else "0",
-                "durationMs": duration_ms,
-                "spanSets": [
-                    {
-                        "spans": [
-                            {
-                                "spanID": row.get("span_id"),
-                                "name": row.get("operation_name") or row.get("name") or "",
-                                "attributes": otlp_attrs_from_dict(attrs_map),
-                            }
-                        ],
-                        "matched": 1,
-                    }
-                ],
-            }
+            traces[trace_id] = card_row(
+                trace_id,
+                span_id=row.get("span_id"),
+                name=row.get("operation_name") or row.get("name") or "",
+                attrs=_row_to_card_attrs(row),
+                start_ns=int(row.get("start_time") or 0),
+                # ``duration`` is in microseconds in the traces stream.
+                duration_ms=int(row.get("duration") or 0) // 1000,
+                service=row.get("service_name") or "",
+                # The span count joins below, from one grouped query per page.
+            )
         page = trace_page(strictly_older_traces(list(traces.values()), f), limit)
         self._attach_span_counts({t["traceID"]: t for t in page["traces"]}, start_s, end_s)
         return page
@@ -375,7 +331,8 @@ class OpenObserveAdapter(BackendAdapter):
         otherwise show "1 spans" for every trace (#179). A failed count
         query leaves ``spanCount`` unset; the UI then shows no number. The
         count's window is a day wider than the search on both sides so a
-        trace straddling the window edge is not under-counted.
+        trace straddling the window edge is not under-counted. ``matched``
+        follows the count, as :func:`shapes.card_row` defines it.
         """
         if not traces:
             return
@@ -405,6 +362,8 @@ class OpenObserveAdapter(BackendAdapter):
             n = row.get("n")
             if tid in traces and isinstance(n, (int, float)) and n > 0:
                 traces[tid]["spanCount"] = int(n)
+                for span_set in traces[tid].get("spanSets") or []:
+                    span_set["matched"] = int(n)
 
     # ── metrics (#182) ───────────────────────────────────────────────
     #
@@ -629,7 +588,7 @@ class OpenObserveAdapter(BackendAdapter):
             }
             # OpenObserve flattens attribute names (``hermes_log_attribution``);
             # give the documented ones their dotted name back (#268).
-            out.append(finish_log_row(row, {_dotted(k): v for k, v in r.items() if k not in known}))
+            out.append(finish_log_row(row, {dotted(k): v for k, v in r.items() if k not in known}))
         return strictly_older(out, f)
 
     def loggers(self, start_s: int, end_s: int) -> List[Dict[str, Any]]:
@@ -713,7 +672,8 @@ def _extract_org(endpoint: str) -> Optional[str]:
     return None
 
 
-_CARD_ATTR_OO_COLS = tuple(_oo_col(k) for k in _CARD_ATTR_KEYS)
+# The card attributes under the underscored column names OpenObserve stores.
+_CARD_ATTR_OO_COLS = tuple(oo_col(k) for k in CARD_ATTRIBUTE_KEYS)
 
 
 def _row_to_card_attrs(row: Dict[str, Any]) -> Dict[str, Any]:
@@ -721,7 +681,7 @@ def _row_to_card_attrs(row: Dict[str, Any]) -> Dict[str, Any]:
     status_code = row.get("status_code")
     if status_code is not None:
         out["status"] = "error" if status_code == 2 else "ok"
-    for dotted_key, col in zip(_CARD_ATTR_KEYS, _CARD_ATTR_OO_COLS):
+    for dotted_key, col in zip(CARD_ATTRIBUTE_KEYS, _CARD_ATTR_OO_COLS):
         v = row.get(col)
         if v is not None and v != "":
             out[dotted_key] = _maybe_num(v)
@@ -769,47 +729,33 @@ _SKIP_OTLP_COLS = frozenset(
 
 
 def _rows_to_otlp(rows: List[Dict[str, Any]]) -> Dict[str, Any]:
-    by_service: Dict[str, List[Dict[str, Any]]] = {}
-    for row in rows:
-        if not isinstance(row, dict):
-            continue
-        start_ns = int(row.get("start_time") or 0)
-        end_ns = int(row.get("end_time") or 0)
-        attrs: Dict[str, Any] = {}
-        for k, v in row.items():
-            if k in _SKIP_OTLP_COLS or v is None or v == "":
-                continue
-            attrs[_dotted(k)] = _maybe_num(v)
-
+    def one(row: Dict[str, Any]) -> Dict[str, Any]:
+        attrs = {
+            dotted(k): _maybe_num(v)
+            for k, v in row.items()
+            if k not in _SKIP_OTLP_COLS and v is not None and v != ""
+        }
         parent = (
             row.get("reference_parent_span_id")
             or _extract_parent_from_reference(row.get("reference"))
             or row.get("parent_span_id")
         )
-        otlp_span = {
-            "traceId": row.get("trace_id"),
-            "spanId": row.get("span_id"),
-            "parentSpanId": parent or None,
-            "name": row.get("operation_name") or row.get("name") or "",
-            "kind": int(row.get("span_kind") or 1),
-            "startTimeUnixNano": str(start_ns) if start_ns else "0",
-            "endTimeUnixNano": str(end_ns) if end_ns else "0",
-            "attributes": otlp_attrs_from_dict(attrs),
-            "status": otlp_status(row.get("status_code"), row.get("status_message") or ""),
-        }
-        service = row.get("service_name") or ""
-        by_service.setdefault(service, []).append(otlp_span)
-
-    batches = []
-    for service, spans in by_service.items():
-        resource_attrs = otlp_attrs_from_dict({"service.name": service} if service else {})
-        batches.append(
-            {
-                "resource": {"attributes": resource_attrs},
-                "scopeSpans": [{"spans": spans}],
-            }
+        return otlp_span(
+            row.get("trace_id"),
+            row.get("span_id"),
+            parent,
+            row.get("operation_name") or row.get("name"),
+            start_ns=int(row.get("start_time") or 0),
+            end_ns=int(row.get("end_time") or 0),
+            attrs=attrs,
+            status=otlp_status(row.get("status_code"), row.get("status_message") or ""),
+            kind=int(row.get("span_kind") or 1),
         )
-    return {"batches": batches}
+
+    by_service = group_by_service(
+        [r for r in rows if isinstance(r, dict)], lambda r: r.get("service_name")
+    )
+    return {"batches": otlp_batches({svc: [one(r) for r in rs] for svc, rs in by_service.items()})}
 
 
 def _extract_parent_from_reference(ref: Any) -> Optional[str]:

@@ -38,6 +38,7 @@ from urllib import parse as _urlparse
 
 from . import default_service_name, register
 from ._attrs import dotted as _dotted
+from ._attrs import oo_col as _underscored
 from .base import (
     BackendAdapter,
     BackendError,
@@ -50,7 +51,6 @@ from .base import (
     finish_log_row,
     http_get_json,
     log_end_ns,
-    otlp_attrs_from_dict,
     otlp_status,
     resolve_env_or_literal,
     rewrite_host_for_docker,
@@ -58,8 +58,7 @@ from .base import (
     strictly_older_traces,
     trace_page,
 )
-
-__all__ = ["UptraceAdapter", "HTTPException"]
+from .shapes import CARD_ATTRIBUTE_KEYS, card_row, group_by_service, otlp_batches, otlp_span
 
 # Entries that switch the service pin on log queries off.
 _NO_PIN = ("", "off", "none", "any", "*")
@@ -99,21 +98,9 @@ _DIALECTS: Dict[str, Dict[str, Any]] = {
 }
 _DIALECT_CACHE: Dict[str, str] = {}
 
-# Card attributes, in the underscored form Uptrace stores them.
-_CARD_ATTRS = (
-    "llm_model_name",
-    "llm_provider",
-    "llm_api_mode",
-    "gen_ai_usage_input_tokens",
-    "gen_ai_usage_output_tokens",
-    "gen_ai_usage_total_tokens",
-    "llm_response_finish_reason",
-    "llm_response_tool_calls",
-    "tool_name",
-    "input_value",
-    "output_value",
-    "llm_output_content",
-)
+# The card attributes in the underscored form Uptrace stores them; the
+# session keys follow the status in the card (see ``_search_hit``).
+_CARD_ATTRS = tuple(_underscored(k) for k in CARD_ATTRIBUTE_KEYS if not k.startswith("hermes."))
 
 # MQL per Uptrace instrument kind and dashboard aggregate. A counter only
 # supports its per-interval sum (``$m``); the other verbs fall back to it and
@@ -680,27 +667,16 @@ def _search_hit(sp: Dict[str, Any], trace_id: str) -> Dict[str, Any]:
         attrs["hermes.session_id"] = raw["hermes_session_id"]
     if raw.get("hermes_turn_number") is not None:
         attrs["hermes.turn.number"] = raw["hermes_turn_number"]
-    start_ns = _ns_from_ms(sp.get("time"))
-    name = sp.get("name") or sp.get("displayName") or ""
-    return {
-        "traceID": trace_id,
-        "rootServiceName": str(raw.get("service_name") or ""),
-        "rootTraceName": name,
-        "startTimeUnixNano": str(start_ns),
-        "durationMs": int(float(sp.get("duration") or 0)),
-        "spanSets": [
-            {
-                "spans": [
-                    {
-                        "spanID": sp.get("id"),
-                        "name": name,
-                        "attributes": otlp_attrs_from_dict(attrs),
-                    }
-                ],
-                "matched": 1,
-            }
-        ],
-    }
+    return card_row(
+        trace_id,
+        span_id=sp.get("id"),
+        name=sp.get("name") or sp.get("displayName") or "",
+        attrs=attrs,
+        start_ns=_ns_from_ms(sp.get("time")),
+        duration_ms=int(float(sp.get("duration") or 0)),
+        service=raw.get("service_name") or "",
+        # Rows are spans; the trace's span count is not among them.
+    )
 
 
 def _trace_to_otlp(data: Any) -> Dict[str, Any]:
@@ -709,36 +685,31 @@ def _trace_to_otlp(data: Any) -> Dict[str, Any]:
     2.1's ``/traces/{p}/{id}`` nests a span's log records under ``logs``; the
     tree only needs the spans (the Logs sub-tab queries logs by trace id).
     """
-    spans_raw = (data.get("spans") if isinstance(data, dict) else None) or []
-    by_service: Dict[str, List[Dict[str, Any]]] = {}
-    for sp in spans_raw:
-        if not isinstance(sp, dict):
-            continue
-        raw = plain_attrs(sp.get("attrs"))
+    spans_raw = [
+        sp
+        for sp in ((data.get("spans") if isinstance(data, dict) else None) or [])
+        if isinstance(sp, dict)
+    ]
+
+    def one(sp: Dict[str, Any]) -> Dict[str, Any]:
         start_ns = _ns_from_ms(sp.get("time"))
-        duration_ns = _ns_from_ms(sp.get("duration") or 0)
-        span = {
-            "traceId": sp.get("traceId"),
-            "spanId": sp.get("id"),
-            "parentSpanId": sp.get("parentId") or None,
-            "name": sp.get("name") or sp.get("displayName") or "",
-            "kind": _KIND.get(str(sp.get("kind") or "internal"), 1),
-            "startTimeUnixNano": str(start_ns),
-            "endTimeUnixNano": str(start_ns + duration_ns if start_ns else 0),
-            "attributes": otlp_attrs_from_dict({_dotted(k): v for k, v in raw.items()}),
-            "status": otlp_status(sp.get("statusCode")),
-        }
-        by_service.setdefault(str(raw.get("service_name") or ""), []).append(span)
+        return otlp_span(
+            sp.get("traceId"),
+            sp.get("id"),
+            sp.get("parentId"),
+            sp.get("name") or sp.get("displayName"),
+            start_ns=start_ns,
+            end_ns=start_ns + _ns_from_ms(sp.get("duration") or 0) if start_ns else 0,
+            attrs=_attrs_dotted(sp.get("attrs")),
+            status=otlp_status(sp.get("statusCode")),
+            kind=_KIND.get(str(sp.get("kind") or "internal"), 1),
+        )
+
+    by_service = group_by_service(
+        spans_raw, lambda sp: plain_attrs(sp.get("attrs")).get("service_name")
+    )
     return {
-        "batches": [
-            {
-                "resource": {
-                    "attributes": otlp_attrs_from_dict({"service.name": svc} if svc else {})
-                },
-                "scopeSpans": [{"spans": spans}],
-            }
-            for svc, spans in by_service.items()
-        ]
+        "batches": otlp_batches({svc: [one(sp) for sp in sps] for svc, sps in by_service.items()})
     }
 
 

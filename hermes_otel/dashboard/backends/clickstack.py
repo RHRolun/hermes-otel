@@ -48,7 +48,6 @@ from .base import (
     counter_increases,
     finish_log_row,
     log_end_ns,
-    otlp_attrs_from_dict,
     otlp_status,
     resolve_env_or_literal,
     rewrite_host_for_docker,
@@ -58,6 +57,7 @@ from .base import (
     validate_label_name,
     validate_metric_name,
 )
+from .shapes import card_attrs, card_row, otlp_batch, otlp_event, otlp_span, to_int
 from .zipkin import coerce_tag
 
 _DEFAULT_CLICKHOUSE_PORT = 8123
@@ -71,25 +71,6 @@ LOOKBEHIND_S = 300
 _ROWS_PER_TRACE = 4
 
 _OTLP_KIND = {"Server": 2, "Client": 3, "Producer": 4, "Consumer": 5, "Internal": 1}
-
-_CARD_KEYS = frozenset(
-    {
-        "llm.model_name",
-        "llm.provider",
-        "llm.api_mode",
-        "gen_ai.usage.input_tokens",
-        "gen_ai.usage.output_tokens",
-        "gen_ai.usage.total_tokens",
-        "llm.response.finish_reason",
-        "llm.response.tool_calls",
-        "tool.name",
-        "input.value",
-        "output.value",
-        "llm.output.content",
-        "hermes.session_id",
-        "hermes.turn.number",
-    }
-)
 
 _IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -116,16 +97,6 @@ def _coerce_map(attrs: Any) -> Dict[str, Any]:
     if not isinstance(attrs, dict):
         return {}
     return {str(k): coerce_tag(str(k), v) for k, v in attrs.items()}
-
-
-def _int(value: Any) -> int:
-    try:
-        return int(value or 0)
-    except (TypeError, ValueError):
-        try:
-            return int(float(value))
-        except (TypeError, ValueError):
-            return 0
 
 
 def _status_from(code: Any, message: Any) -> Dict[str, Any]:
@@ -289,7 +260,7 @@ class ClickstackAdapter(BackendAdapter):
             # Several spans of one trace may come back on a widened search; the
             # card is the earliest matching span, as the other adapters show it.
             prev = cards.get(tid)
-            if prev is None or _int(row.get("ts_ns")) < _int(prev.get("ts_ns")):
+            if prev is None or to_int(row.get("ts_ns")) < to_int(prev.get("ts_ns")):
                 cards[tid] = row
         trace_ids = list(cards)
         counts: Dict[str, int] = {}
@@ -299,37 +270,22 @@ class ClickstackAdapter(BackendAdapter):
                 f"SELECT TraceId, count() AS n FROM {self._table(self.traces_table)} "
                 f"WHERE TraceId IN ({in_list}) GROUP BY TraceId"
             ):
-                counts[str(r.get("TraceId"))] = _int(r.get("n"))
+                counts[str(r.get("TraceId"))] = to_int(r.get("n"))
         traces: List[Dict[str, Any]] = []
         for tid, row in cards.items():
-            attrs = _coerce_map(row.get("SpanAttributes"))
-            keep = {k: v for k, v in attrs.items() if k in _CARD_KEYS}
-            keep["name"] = row.get("SpanName") or ""
-            if str(row.get("StatusCode") or "").lower() == "error":
-                keep["status"] = "error"
-            start_ns = _int(row.get("ts_ns"))
-            dur_ns = _int(row.get("Duration"))
+            name = row.get("SpanName") or ""
+            error = str(row.get("StatusCode") or "").lower() == "error"
             traces.append(
-                {
-                    "traceID": tid,
-                    "spanCount": counts.get(tid, 1),
-                    "rootServiceName": row.get("ServiceName") or "",
-                    "rootTraceName": row.get("SpanName") or "",
-                    "startTimeUnixNano": str(start_ns) if start_ns else "0",
-                    "durationMs": dur_ns // 1_000_000,
-                    "spanSets": [
-                        {
-                            "spans": [
-                                {
-                                    "spanID": row.get("SpanId"),
-                                    "name": row.get("SpanName") or "",
-                                    "attributes": otlp_attrs_from_dict(keep),
-                                }
-                            ],
-                            "matched": counts.get(tid, 1),
-                        }
-                    ],
-                }
+                card_row(
+                    tid,
+                    span_id=row.get("SpanId"),
+                    name=name,
+                    attrs=card_attrs(_coerce_map(row.get("SpanAttributes")), name, error),
+                    start_ns=to_int(row.get("ts_ns")),
+                    duration_ms=to_int(row.get("Duration")) // 1_000_000,
+                    service=row.get("ServiceName") or "",
+                    span_count=counts.get(tid, 1),
+                )
             )
         page = trace_page(strictly_older_traces(traces, f), limit)
         if not f.roots_only and len(rows) >= fetch:
@@ -356,6 +312,8 @@ class ClickstackAdapter(BackendAdapter):
         rows = self._sql(sql)
         if not rows:
             raise BackendError(404, f"Trace {trace_id} not found in ClickStack", "not_found")
+        # One batch per distinct resource (the whole attribute map, not just
+        # the service): two processes of one service stay apart.
         by_resource: Dict[str, Tuple[Dict[str, Any], List[Dict[str, Any]]]] = {}
         for row in rows:
             res_attrs = _coerce_map(row.get("ResourceAttributes"))
@@ -363,43 +321,30 @@ class ClickstackAdapter(BackendAdapter):
             if service and "service.name" not in res_attrs:
                 res_attrs["service.name"] = service
             key = json.dumps(res_attrs, sort_keys=True, default=str)
-            start_ns = _int(row.get("ts_ns"))
-            dur_ns = _int(row.get("Duration"))
-            span = {
-                "traceId": row.get("TraceId") or trace_id,
-                "spanId": row.get("SpanId"),
-                "parentSpanId": row.get("ParentSpanId") or None,
-                "name": row.get("SpanName") or "",
-                "kind": _OTLP_KIND.get(str(row.get("SpanKind") or ""), 1),
-                "startTimeUnixNano": str(start_ns) if start_ns else "0",
-                "endTimeUnixNano": str(start_ns + dur_ns) if start_ns else "0",
-                "attributes": otlp_attrs_from_dict(_coerce_map(row.get("SpanAttributes"))),
-                "status": _status_from(row.get("StatusCode"), row.get("StatusMessage")),
-            }
-            names = row.get("event_names") or []
+            start_ns = to_int(row.get("ts_ns"))
             times = row.get("event_ts") or []
             attrs_list = row.get("event_attrs") or []
-            events = []
-            for i, name in enumerate(names):
-                events.append(
-                    {
-                        "name": str(name),
-                        "timeUnixNano": str(_int(times[i]) if i < len(times) else 0),
-                        "attributes": otlp_attrs_from_dict(
-                            _coerce_map(attrs_list[i]) if i < len(attrs_list) else {}
-                        ),
-                    }
-                )
-            if events:
-                span["events"] = events
+            span = otlp_span(
+                row.get("TraceId") or trace_id,
+                row.get("SpanId"),
+                row.get("ParentSpanId"),
+                row.get("SpanName"),
+                start_ns=start_ns,
+                end_ns=start_ns + to_int(row.get("Duration")) if start_ns else 0,
+                attrs=_coerce_map(row.get("SpanAttributes")),
+                status=_status_from(row.get("StatusCode"), row.get("StatusMessage")),
+                kind=_OTLP_KIND.get(str(row.get("SpanKind") or ""), 1),
+                events=[
+                    otlp_event(
+                        str(name),
+                        to_int(times[i]) if i < len(times) else 0,
+                        _coerce_map(attrs_list[i]) if i < len(attrs_list) else {},
+                    )
+                    for i, name in enumerate(row.get("event_names") or [])
+                ],
+            )
             by_resource.setdefault(key, (res_attrs, []))[1].append(span)
-        batches = [
-            {
-                "resource": {"attributes": otlp_attrs_from_dict(attrs)},
-                "scopeSpans": [{"spans": spans}],
-            }
-            for attrs, spans in by_resource.values()
-        ]
+        batches = [otlp_batch(attrs, spans) for attrs, spans in by_resource.values()]
         return {"batches": batches, "span_count": len(rows), "truncated": False}
 
     # ── metrics (#194 shapes) ─────────────────────────────────────────
@@ -556,10 +501,10 @@ class ClickstackAdapter(BackendAdapter):
             attrs = _coerce_map(row.get("LogAttributes"))
             record = {
                 "level": str(row.get("SeverityText") or "INFO").upper(),
-                "severity_number": _int(row.get("SeverityNumber")) or None,
+                "severity_number": to_int(row.get("SeverityNumber")) or None,
                 "logger": row.get("ScopeName") or "",
                 "body": row.get("Body") or "",
-                "time_unix_nano": _int(row.get("ts_ns")),
+                "time_unix_nano": to_int(row.get("ts_ns")),
                 "trace_id": row.get("TraceId") or None,
                 "span_id": row.get("SpanId") or None,
                 "session_id": attrs.pop("hermes.session_id", None),
@@ -576,7 +521,7 @@ class ClickstackAdapter(BackendAdapter):
             "GROUP BY ScopeName ORDER BY n DESC LIMIT 200"
         )
         return [
-            {"logger": str(r.get("ScopeName")), "count": _int(r.get("n"))}
+            {"logger": str(r.get("ScopeName")), "count": to_int(r.get("n"))}
             for r in self._sql(sql)
             if r.get("ScopeName")
         ]

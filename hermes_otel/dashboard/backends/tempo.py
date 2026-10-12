@@ -30,7 +30,6 @@ from .base import (
     BackendAdapter,
     BackendError,
     ConfigError,
-    HTTPException,
     LogFilter,
     StructuredFilter,
     http_get_json,
@@ -38,8 +37,7 @@ from .base import (
     strictly_older_traces,
     trace_page,
 )
-
-__all__ = ["TempoAdapter", "HTTPException"]
+from .shapes import CARD_ATTRIBUTE_KEYS, span_count_of
 
 _SELECT_PIPELINE = re.compile(r"\|\s*select\s*\(")
 
@@ -53,24 +51,9 @@ _DEFAULT_PROMETHEUS_PORT = 9090
 _DEFAULT_LOKI_PORT = 3100
 _DEFAULT_SEARCH_FETCH = 500
 
-_CARD_SELECT_ATTRS = (
-    ".llm.model_name",
-    ".llm.provider",
-    ".llm.api_mode",
-    ".gen_ai.usage.input_tokens",
-    ".gen_ai.usage.output_tokens",
-    ".gen_ai.usage.total_tokens",
-    ".llm.response.finish_reason",
-    ".llm.response.tool_calls",
-    ".tool.name",
-    ".input.value",
-    ".output.value",
-    ".llm.output.content",
-    ".hermes.session_id",
-    ".hermes.turn.number",
-    "status",
-    "name",
-)
+# The ``| select()`` list: the card attributes as span attributes, plus the
+# intrinsics the card reads.
+_CARD_SELECT_ATTRS = tuple(f".{k}" for k in CARD_ATTRIBUTE_KEYS) + ("status", "name")
 
 
 def _dedupe_spans(data: Any) -> Any:
@@ -447,11 +430,7 @@ class TempoAdapter(BackendAdapter):
         data = _dedupe_spans(http_get_json(url, timeout=20.0))
         if not isinstance(data, dict):
             raise BackendError(404, f"Trace {trace_id} not found in Tempo", "not_found")
-        n = sum(
-            len(scope.get("spans") or [])
-            for batch in data.get("batches") or []
-            for scope in batch.get("scopeSpans") or []
-        )
+        n = span_count_of(data.get("batches") or [])
         if n == 0:
             raise BackendError(404, f"Trace {trace_id} not found in Tempo", "not_found")
         data["span_count"] = n

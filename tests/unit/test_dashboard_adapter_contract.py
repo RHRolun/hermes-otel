@@ -530,27 +530,13 @@ class TestEveryAdapter:
         assert set(st["filters"]) == set(FILTER_KEYS)
         assert isinstance(st.get("query_url"), str) and st["query_url"].startswith("http")
 
-    @pytest.mark.parametrize(
-        "cls",
-        [
-            (
-                pytest.param(
-                    p.values[0],
-                    id=p.id,
-                    marks=pytest.mark.xfail(
-                        strict=True,
-                        reason="Phoenix resolves its project over HTTP inside trace_url (#403)",
-                    ),
-                )
-                if p.id == "phoenix"
-                else p
-            )
-            for p in _every_adapter()
-        ],
-    )
-    def test_trace_url_is_a_link_or_none(self, cls):
-        from helpers.dashboard import generic_adapter
+    @pytest.mark.parametrize("cls", _every_adapter())
+    def test_trace_url_is_a_link_or_none_even_with_the_backend_down(self, cls, monkeypatch):
+        """A link needs no backend: an unreachable one yields ``None``, never an
+        error (#403: Phoenix used to resolve its project over HTTP here)."""
+        from helpers.dashboard import fake_http, generic_adapter
 
+        fake_http(monkeypatch, {}, default=_down)
         url = generic_adapter(cls).trace_url("0" * 32)
         assert url is None or url.startswith("http")
 

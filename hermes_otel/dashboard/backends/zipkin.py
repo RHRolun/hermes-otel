@@ -33,13 +33,21 @@ from .base import (
     BackendError,
     StructuredFilter,
     http_get_json,
-    otlp_attrs_from_dict,
     otlp_status,
     parse_kv_tokens,
     resolve_env_or_literal,
     rewrite_host_for_docker,
     strictly_older_traces,
     trace_page,
+)
+from .shapes import (
+    card_attrs,
+    card_row,
+    group_by_service,
+    otlp_batches,
+    otlp_event,
+    otlp_span,
+    to_int,
 )
 
 _DEFAULT_ZIPKIN_PORT = 9411
@@ -48,39 +56,10 @@ _DEFAULT_ZIPKIN_PORT = 9411
 # (every INTERNAL span) is 1.
 _OTLP_KIND = {"SERVER": 2, "CLIENT": 3, "PRODUCER": 4, "CONSUMER": 5}
 
-_CARD_TAGS = frozenset(
-    {
-        "llm.model_name",
-        "llm.provider",
-        "llm.api_mode",
-        "gen_ai.usage.input_tokens",
-        "gen_ai.usage.output_tokens",
-        "gen_ai.usage.total_tokens",
-        "llm.response.finish_reason",
-        "llm.response.tool_calls",
-        "tool.name",
-        "input.value",
-        "output.value",
-        "llm.output.content",
-        "hermes.session_id",
-        "hermes.turn.number",
-    }
-)
-
 _INT_RE = re.compile(r"^-?\d+$")
 _FLOAT_RE = re.compile(r"^-?\d+\.\d+(e[+-]?\d+)?$", re.IGNORECASE)
 # Keys whose digit-only values are identifiers, never numbers.
 _ID_KEY_SUFFIXES = (".id", "_id", "id")
-
-
-def _int(value: Any) -> int:
-    try:
-        return int(value or 0)
-    except (TypeError, ValueError):
-        try:
-            return int(float(value))
-        except (TypeError, ValueError):
-            return 0
 
 
 def coerce_tag(key: str, value: Any) -> Any:
@@ -236,7 +215,7 @@ class ZipkinAdapter(BackendAdapter):
             have = attrs.get(k)
             if have is None or str(have).lower() != str(v).lower():
                 return False
-        if f.min_duration_ms and _int(root.get("duration")) < int(f.min_duration_ms) * 1000:
+        if f.min_duration_ms and to_int(root.get("duration")) < int(f.min_duration_ms) * 1000:
             return False
         return True
 
@@ -259,13 +238,7 @@ class ZipkinAdapter(BackendAdapter):
             if not isinstance(ann, dict):
                 continue
             name, attrs = parse_annotation(ann.get("value"))
-            events.append(
-                {
-                    "name": name,
-                    "timeUnixNano": str(_int(ann.get("timestamp")) * 1000),
-                    "attributes": otlp_attrs_from_dict(attrs),
-                }
-            )
+            events.append(otlp_event(name, to_int(ann.get("timestamp")) * 1000, attrs))
         return events
 
     # ── Public API ───────────────────────────────────────────────────
@@ -297,7 +270,7 @@ class ZipkinAdapter(BackendAdapter):
                 card = next(
                     (
                         sp
-                        for sp in sorted(spans, key=lambda sp: _int(sp.get("timestamp")))
+                        for sp in sorted(spans, key=lambda sp: to_int(sp.get("timestamp")))
                         if str(sp.get("name") or "").startswith(f.name_prefix)
                     ),
                     None,
@@ -305,36 +278,24 @@ class ZipkinAdapter(BackendAdapter):
                 if card is None:
                     continue
                 attrs = self._attrs(card)
-            service = ((card.get("localEndpoint") or {}).get("serviceName")) or ""
-            keep = {k: v for k, v in attrs.items() if k in _CARD_TAGS}
-            keep["name"] = card.get("name") or ""
-            if self._status_of(attrs).get("code") == 2:
-                keep["status"] = "error"
-            start_us = _int(card.get("timestamp"))
-            dur_us = _int(card.get("duration"))
+            name = card.get("name") or ""
             traces.append(
-                {
-                    "traceID": trace_id,
-                    "spanCount": len(spans),
-                    "rootServiceName": service,
-                    "rootTraceName": card.get("name") or "",
-                    "startTimeUnixNano": str(start_us * 1000) if start_us else "0",
-                    "durationMs": dur_us // 1000 if dur_us else 0,
-                    "spanSets": [
-                        {
-                            "spans": [
-                                {
-                                    "spanID": card.get("id"),
-                                    "name": card.get("name") or "",
-                                    "attributes": otlp_attrs_from_dict(keep),
-                                }
-                            ],
-                            "matched": len(spans),
-                        }
-                    ],
-                }
+                card_row(
+                    trace_id,
+                    span_id=card.get("id"),
+                    name=name,
+                    attrs=card_attrs(attrs, name, self._status_of(attrs).get("code") == 2),
+                    start_ns=to_int(card.get("timestamp")) * 1000,
+                    duration_ms=to_int(card.get("duration")) // 1000,
+                    service=self._service_of(card),
+                    span_count=len(spans),
+                )
             )
         return trace_page(strictly_older_traces(traces, f), limit)
+
+    @staticmethod
+    def _service_of(span: Dict[str, Any]) -> str:
+        return ((span.get("localEndpoint") or {}).get("serviceName")) or ""
 
     def trace_url(self, trace_id: str) -> Optional[str]:
         return f"{self.query_url}/zipkin/traces/{trace_id}"
@@ -351,35 +312,22 @@ class ZipkinAdapter(BackendAdapter):
         if not spans:
             raise BackendError(404, f"Trace {trace_id} not found in Zipkin", "not_found")
 
-        by_service: Dict[str, List[Dict[str, Any]]] = {}
-        for sp in spans:
+        def one(sp: Dict[str, Any]) -> Dict[str, Any]:
             attrs = self._attrs(sp)
-            service = ((sp.get("localEndpoint") or {}).get("serviceName")) or ""
-            start_us = _int(sp.get("timestamp"))
-            dur_us = _int(sp.get("duration"))
-            otlp_span = {
-                "traceId": sp.get("traceId") or trace_id,
-                "spanId": sp.get("id"),
-                "parentSpanId": sp.get("parentId") or None,
-                "name": sp.get("name") or "",
-                "kind": _OTLP_KIND.get(str(sp.get("kind") or "").upper(), 1),
-                "startTimeUnixNano": str(start_us * 1000) if start_us else "0",
-                "endTimeUnixNano": str((start_us + dur_us) * 1000) if start_us else "0",
-                "attributes": otlp_attrs_from_dict(attrs),
-                "status": self._status_of(attrs),
-            }
-            events = self._events(sp)
-            if events:
-                otlp_span["events"] = events
-            by_service.setdefault(service, []).append(otlp_span)
-
-        batches = []
-        for service, spans_list in by_service.items():
-            resource_attrs = otlp_attrs_from_dict({"service.name": service} if service else {})
-            batches.append(
-                {
-                    "resource": {"attributes": resource_attrs},
-                    "scopeSpans": [{"spans": spans_list}],
-                }
+            start_us = to_int(sp.get("timestamp"))
+            return otlp_span(
+                sp.get("traceId") or trace_id,
+                sp.get("id"),
+                sp.get("parentId"),
+                sp.get("name"),
+                start_ns=start_us * 1000,
+                end_ns=(start_us + to_int(sp.get("duration"))) * 1000 if start_us else 0,
+                attrs=attrs,
+                status=self._status_of(attrs),
+                kind=_OTLP_KIND.get(str(sp.get("kind") or "").upper(), 1),
+                events=self._events(sp),
             )
+
+        by_service = group_by_service(spans, self._service_of)
+        batches = otlp_batches({svc: [one(sp) for sp in sps] for svc, sps in by_service.items()})
         return {"batches": batches, "span_count": len(spans), "truncated": False}

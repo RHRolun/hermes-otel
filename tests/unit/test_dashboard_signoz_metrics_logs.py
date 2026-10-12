@@ -11,7 +11,7 @@ from typing import Any, Dict, List
 import pytest
 
 from hermes_otel.dashboard.backends import signoz as sz
-from hermes_otel.dashboard.backends.base import LogFilter
+from hermes_otel.dashboard.backends.base import BackendError, LogFilter
 
 CFG = {
     "type": "signoz",
@@ -145,7 +145,7 @@ class TestCapabilities:
 
     def test_no_api_key_fails_closed(self):
         a = sz.SigNozAdapter({"type": "signoz", "endpoint": "http://localhost:4318/v1/traces"})
-        with pytest.raises(sz.HTTPException):
+        with pytest.raises(BackendError):
             a.metric_names(0, 1)
 
 

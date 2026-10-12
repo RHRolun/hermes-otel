@@ -26,10 +26,14 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib import error as _urlerror
 from urllib import parse as _urlparse
 from urllib import request as _urlrequest
+
+# The OTLP attribute / status builders live in ``shapes`` (#403) and are
+# re-exported here because every adapter imports them from ``base``.
+from .shapes import otlp_attr, otlp_attrs_from_dict, otlp_status  # noqa: F401
 
 try:  # the dashboard process has FastAPI; the skill's terminal tool (#215) may not
     from fastapi import HTTPException
@@ -773,53 +777,6 @@ def http_post_json(
         req_headers.update(headers)
     req = _urlrequest.Request(url, data=data, headers=req_headers, method="POST")
     return _execute(req, timeout)
-
-
-# ── OTLP shape helpers ────────────────────────────────────────────────
-#
-# Building OTLP JSON attributes by hand is tedious and every non-Tempo
-# adapter needs it. These helpers are intentionally permissive — they
-# accept any Python value and stringify-as-JSON for unknown types so an
-# unexpected dict attribute doesn't crash the response.
-
-
-def otlp_attr(key: str, value: Any) -> Dict[str, Any]:
-    """Wrap ``(key, value)`` into an OTLP attribute entry."""
-    if value is None:
-        return {"key": key, "value": {}}
-    if isinstance(value, bool):
-        return {"key": key, "value": {"boolValue": value}}
-    if isinstance(value, int):
-        return {"key": key, "value": {"intValue": str(value)}}
-    if isinstance(value, float):
-        return {"key": key, "value": {"doubleValue": value}}
-    if isinstance(value, str):
-        return {"key": key, "value": {"stringValue": value}}
-    # dict / list / anything else: stringify as JSON so the UI can still
-    # render it. Preserves structure in a predictable form.
-    try:
-        return {"key": key, "value": {"stringValue": json.dumps(value, default=str)}}
-    except Exception:
-        return {"key": key, "value": {"stringValue": str(value)}}
-
-
-def otlp_attrs_from_dict(d: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Render a flat dict as a list of OTLP attribute entries."""
-    return [otlp_attr(k, v) for k, v in d.items() if v is not None]
-
-
-def otlp_status(code: Union[str, int, None], message: str = "") -> Dict[str, Any]:
-    """Normalize various status flavours into an OTLP ``Status`` message."""
-    if code is None:
-        return {}
-    if isinstance(code, int):
-        return {"code": code, "message": message or ""}
-    norm = str(code).lower()
-    if norm in ("error", "status_code_error", "err", "2"):
-        return {"code": 2, "message": message or "error"}
-    if norm in ("ok", "status_code_ok", "success", "1"):
-        return {"code": 1, "message": message or ""}
-    return {"code": 0, "message": message or ""}
 
 
 def ns_from_any(value: Any) -> Optional[int]:

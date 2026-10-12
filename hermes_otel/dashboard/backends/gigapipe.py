@@ -43,11 +43,21 @@ from .base import (
     finish_log_row,
     http_get_json,
     log_end_ns,
-    otlp_attrs_from_dict,
     severity_number_for,
     strictly_older,
     validate_label_name,
     validate_metric_name,
+)
+from .shapes import (
+    card_attrs,
+    card_span_set,
+    group_by_service,
+    otlp_attrs_to_dict,
+    otlp_batches,
+    otlp_event,
+    otlp_span,
+    span_count_of,
+    to_int,
 )
 from .tempo import TempoAdapter, _dedupe_spans
 from .zipkin import coerce_tag
@@ -55,25 +65,6 @@ from .zipkin import coerce_tag
 _DEFAULT_PORT = 3100
 # Gigapipe serves PromQL from its 15 s rollup; a finer step repeats samples.
 _ROLLUP_STEP_S = 15
-
-_CARD_KEYS = frozenset(
-    {
-        "llm.model_name",
-        "llm.provider",
-        "llm.api_mode",
-        "gen_ai.usage.input_tokens",
-        "gen_ai.usage.output_tokens",
-        "gen_ai.usage.total_tokens",
-        "llm.response.finish_reason",
-        "llm.response.tool_calls",
-        "tool.name",
-        "input.value",
-        "output.value",
-        "llm.output.content",
-        "hermes.session_id",
-        "hermes.turn.number",
-    }
-)
 
 # Level names at or above each Python logging floor, for the ``level`` label.
 _LEVELS_AT_LEAST = {
@@ -95,75 +86,49 @@ def _origin(url: str) -> str:
     return f"{parsed.scheme or 'http'}://{parsed.hostname or 'localhost'}{port}"
 
 
+def _typed_attrs(items: Any) -> Dict[str, Any]:
+    """Gigapipe's attribute list, every value a ``stringValue``, coerced back
+    to its type (numbers, booleans) except on id-like keys."""
+    return {k: coerce_tag(str(k), v) for k, v in otlp_attrs_to_dict(items).items()}
+
+
 def normalize_trace(data: Any) -> Dict[str, Any]:
     """Gigapipe's ``/api/traces/{id}`` JSON → the Tempo ``batches`` shape with
     typed attributes, one batch per ``serviceName``."""
     groups = (data or {}).get("resourceSpans") if isinstance(data, dict) else None
-    by_service: Dict[str, List[Dict[str, Any]]] = {}
-    for rs in groups or []:
-        if not isinstance(rs, dict):
-            continue
-        scopes = rs.get("instrumentationLibrarySpans") or rs.get("scopeSpans") or []
-        for scope in scopes:
-            for sp in (scope or {}).get("spans") or []:
-                if not isinstance(sp, dict):
-                    continue
-                attrs = {
-                    a["key"]: coerce_tag(str(a["key"]), _unwrap(a.get("value")))
-                    for a in sp.get("attributes") or []
-                    if isinstance(a, dict) and a.get("key")
-                }
-                events = []
-                for ev in sp.get("events") or []:
-                    if isinstance(ev, dict):
-                        events.append(
-                            {
-                                "name": ev.get("name") or "",
-                                "timeUnixNano": str(ev.get("timeUnixNano") or 0),
-                                "attributes": otlp_attrs_from_dict(
-                                    {
-                                        a["key"]: coerce_tag(str(a["key"]), _unwrap(a.get("value")))
-                                        for a in ev.get("attributes") or []
-                                        if isinstance(a, dict) and a.get("key")
-                                    }
-                                ),
-                            }
-                        )
-                span = {
-                    "traceId": str(sp.get("traceId") or sp.get("traceID") or "").lower(),
-                    "spanId": sp.get("spanId") or sp.get("spanID"),
-                    "parentSpanId": sp.get("parentSpanId") or sp.get("parentSpanID") or None,
-                    "name": sp.get("name") or "",
-                    "kind": int(sp.get("kind") or 1),
-                    "startTimeUnixNano": str(sp.get("startTimeUnixNano") or 0),
-                    "endTimeUnixNano": str(sp.get("endTimeUnixNano") or 0),
-                    "attributes": otlp_attrs_from_dict(attrs),
-                    "status": sp.get("status") or {},
-                }
-                if events:
-                    span["events"] = events
-                by_service.setdefault(str(sp.get("serviceName") or ""), []).append(span)
-    batches = []
-    for service, spans in by_service.items():
-        resource = otlp_attrs_from_dict({"service.name": service} if service else {})
-        batches.append({"resource": {"attributes": resource}, "scopeSpans": [{"spans": spans}]})
-    return {"batches": batches}
+    raw_spans: List[Dict[str, Any]] = [
+        sp
+        for rs in groups or []
+        if isinstance(rs, dict)
+        for scope in (rs.get("instrumentationLibrarySpans") or rs.get("scopeSpans") or [])
+        for sp in (scope or {}).get("spans") or []
+        if isinstance(sp, dict)
+    ]
 
+    def one(sp: Dict[str, Any]) -> Dict[str, Any]:
+        return otlp_span(
+            str(sp.get("traceId") or sp.get("traceID") or "").lower(),
+            sp.get("spanId") or sp.get("spanID"),
+            sp.get("parentSpanId") or sp.get("parentSpanID"),
+            sp.get("name"),
+            start_ns=to_int(sp.get("startTimeUnixNano")),
+            end_ns=to_int(sp.get("endTimeUnixNano")),
+            attrs=_typed_attrs(sp.get("attributes")),
+            status=sp.get("status") or {},
+            kind=int(sp.get("kind") or 1),
+            events=[
+                otlp_event(
+                    ev.get("name"), ev.get("timeUnixNano"), _typed_attrs(ev.get("attributes"))
+                )
+                for ev in sp.get("events") or []
+                if isinstance(ev, dict)
+            ],
+        )
 
-def _unwrap(value: Any) -> Any:
-    """An OTLP JSON ``AnyValue`` → a Python value with its type (``intValue``
-    arrives as a digit string)."""
-    if not isinstance(value, dict):
-        return value
-    if "intValue" in value:
-        try:
-            return int(value["intValue"])
-        except (TypeError, ValueError):
-            return value["intValue"]
-    for key in ("stringValue", "boolValue", "doubleValue"):
-        if key in value:
-            return value[key]
-    return value
+    by_service = group_by_service(raw_spans, lambda sp: sp.get("serviceName"))
+    return {
+        "batches": otlp_batches({svc: [one(sp) for sp in sps] for svc, sps in by_service.items()})
+    }
 
 
 # Concurrent detail fetches per search page (one per card that needs one).
@@ -266,30 +231,22 @@ class GigapipeAdapter(TempoAdapter):
                     card = next((sp for sp in all_spans if sp.get("spanId") == wanted), None)
             if card is None:
                 continue
-            attrs = {a["key"]: _unwrap(a.get("value")) for a in card.get("attributes") or []}
-            keep = {k: v for k, v in attrs.items() if k in _CARD_KEYS}
-            keep["name"] = card.get("name") or row.get("rootTraceName") or ""
-            if (card.get("status") or {}).get("code") == 2:
-                keep["status"] = "error"
-            row["spanSets"] = [
-                {
-                    "spans": [
-                        {
-                            "spanID": card.get("spanId"),
-                            "name": card.get("name") or "",
-                            "attributes": otlp_attrs_from_dict(keep),
-                        }
-                    ],
-                    "matched": len(all_spans),
-                }
-            ]
+            name = card.get("name") or row.get("rootTraceName") or ""
+            attrs = card_attrs(
+                otlp_attrs_to_dict(card.get("attributes")),
+                name,
+                (card.get("status") or {}).get("code") == 2,
+            )
+            row["spanSets"] = [card_span_set(card.get("spanId"), name, attrs, len(all_spans))]
             row["spanCount"] = len(all_spans)
-            row["rootTraceName"] = card.get("name") or row.get("rootTraceName") or ""
+            row["rootTraceName"] = name
             if not row.get("rootServiceName"):
                 for b in detail["batches"]:
-                    for a in (b.get("resource") or {}).get("attributes") or []:
-                        if a.get("key") == "service.name":
-                            row["rootServiceName"] = _unwrap(a.get("value"))
+                    service = otlp_attrs_to_dict((b.get("resource") or {}).get("attributes")).get(
+                        "service.name"
+                    )
+                    if service:
+                        row["rootServiceName"] = service
         return page
 
     @staticmethod
@@ -300,7 +257,7 @@ class GigapipeAdapter(TempoAdapter):
             return False
         if f.name_regex and name != f.name_regex:
             return False
-        attrs = {a.get("key"): _unwrap(a.get("value")) for a in span.get("attributes") or []}
+        attrs = otlp_attrs_to_dict(span.get("attributes"))
         for k, v in f.attr_equals.items():
             if str(attrs.get(k, "")).lower() != str(v).lower():
                 return False
@@ -317,9 +274,7 @@ class GigapipeAdapter(TempoAdapter):
                 raise BackendError(404, f"Trace {trace_id} not found in Gigapipe", "not_found")
             raise
         data = _dedupe_spans(normalize_trace(raw))
-        n = sum(
-            len(sc.get("spans") or []) for b in data["batches"] for sc in b.get("scopeSpans") or []
-        )
+        n = span_count_of(data["batches"])
         if n == 0:
             raise BackendError(404, f"Trace {trace_id} not found in Gigapipe", "not_found")
         data["span_count"] = n

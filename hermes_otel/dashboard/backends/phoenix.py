@@ -23,13 +23,13 @@ from .base import (
     BackendError,
     StructuredFilter,
     http_post_json,
-    otlp_attrs_from_dict,
     otlp_status,
     resolve_env_or_literal,
     rewrite_host_for_docker,
     strictly_older_traces,
     trace_page,
 )
+from .shapes import CARD_ATTRIBUTE_SET, card_row, flatten_dotted, otlp_batches, otlp_span
 
 _DEFAULT_PHOENIX_PORT = 6006
 # Phoenix pages spans; the detail view asks for this many and says so when
@@ -40,23 +40,17 @@ _DETAIL_SPAN_CAP = 500
 _PROJECT_LIST_SIZE = 200
 
 
-def _flatten(obj: Any, prefix: str = "") -> Dict[str, Any]:
-    """Phoenix's ``attributes`` JSON is nested by dot groupings
-    (``{"llm": {"model_name": ...}}``). Re-emit as a flat dict
-    (``{"llm.model_name": ...}``) to match Tempo/OTLP attribute keys.
-    """
-    out: Dict[str, Any] = {}
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            key = f"{prefix}.{k}" if prefix else k
-            if isinstance(v, dict):
-                out.update(_flatten(v, key))
-            else:
-                out[key] = v
-    else:
-        if prefix:
-            out[prefix] = obj
-    return out
+def _attributes_of(span: Dict[str, Any]) -> Dict[str, Any]:
+    """Phoenix's ``attributes`` is a JSON string nested by dot groupings
+    (``{"llm": {"model_name": ...}}``); flattened to the OTLP keys
+    (``llm.model_name``) the rest of the dashboard uses."""
+    raw = span.get("attributes")
+    if not (isinstance(raw, str) and raw):
+        return {}
+    try:
+        return flatten_dotted(json.loads(raw))
+    except Exception:
+        return {}
 
 
 def _iso_to_ns(iso: Optional[str]) -> Optional[int]:
@@ -72,33 +66,6 @@ def _iso_to_ns(iso: Optional[str]) -> Optional[int]:
 
 def _ns_to_iso(ns: int) -> str:
     return datetime.fromtimestamp(ns / 1_000_000_000, tz=timezone.utc).isoformat()
-
-
-# Phoenix's SpanKind (LLM, CHAIN, TOOL, …) is OpenInference's semantic kind,
-# not OTLP's transport kind, so every span is INTERNAL (1) in the OTLP shape.
-_OTLP_INTERNAL = 1
-
-
-_CARD_ATTR_KEYS = frozenset(
-    {
-        "llm.model_name",
-        "llm.provider",
-        "llm.api_mode",
-        "gen_ai.usage.input_tokens",
-        "gen_ai.usage.output_tokens",
-        "gen_ai.usage.total_tokens",
-        "llm.response.finish_reason",
-        "llm.response.tool_calls",
-        "tool.name",
-        "input.value",
-        "output.value",
-        "llm.output.content",
-        "status",
-        "name",
-        "hermes.session_id",
-        "hermes.turn.number",
-    }
-)
 
 
 # Whether ``Project.spans`` still takes ``rootSpansOnly`` /
@@ -250,17 +217,14 @@ class PhoenixAdapter(BackendAdapter):
     # ── Normalized shape builders ────────────────────────────────────
 
     def _span_to_card_attrs(self, span: Dict[str, Any]) -> Dict[str, Any]:
-        """Extract the card-relevant attributes from a Phoenix span node."""
-        attrs: Dict[str, Any] = {}
-        raw = span.get("attributes")
-        if isinstance(raw, str) and raw:
-            try:
-                flat = _flatten(json.loads(raw))
-            except Exception:
-                flat = {}
-            for k, v in flat.items():
-                if k in _CARD_ATTR_KEYS:
-                    attrs[k] = v
+        """The card's attributes from a Phoenix span node: the known keys of
+        the span's attributes, then Phoenix's first-class fields where the
+        attributes lack them."""
+        attrs = {
+            k: v
+            for k, v in _attributes_of(span).items()
+            if k in CARD_ATTRIBUTE_SET or k in ("status", "name")
+        }
         # First-class input/output take precedence.
         inp = (span.get("input") or {}).get("value")
         if inp:
@@ -286,14 +250,7 @@ class PhoenixAdapter(BackendAdapter):
 
     def _span_node_to_otlp(self, span: Dict[str, Any]) -> Dict[str, Any]:
         """Build an OTLP span dict from a Phoenix span node."""
-        raw_attrs: Dict[str, Any] = {}
-        raw = span.get("attributes")
-        if isinstance(raw, str) and raw:
-            try:
-                raw_attrs = _flatten(json.loads(raw))
-            except Exception:
-                raw_attrs = {}
-
+        raw_attrs = _attributes_of(span)
         inp = (span.get("input") or {}).get("value")
         if inp is not None:
             raw_attrs.setdefault("input.value", inp)
@@ -307,22 +264,19 @@ class PhoenixAdapter(BackendAdapter):
         if span.get("tokenCountCompletion") is not None:
             raw_attrs.setdefault("gen_ai.usage.output_tokens", span["tokenCountCompletion"])
 
-        start_ns = _iso_to_ns(span.get("startTime"))
-        end_ns = _iso_to_ns(span.get("endTime"))
         ctx = span.get("context") or {}
-
-        otlp_span: Dict[str, Any] = {
-            "traceId": ctx.get("traceId"),
-            "spanId": span.get("spanId") or ctx.get("spanId"),
-            "parentSpanId": span.get("parentId") or None,
-            "name": span.get("name") or "",
-            "kind": _OTLP_INTERNAL,
-            "startTimeUnixNano": str(start_ns) if start_ns else "0",
-            "endTimeUnixNano": str(end_ns) if end_ns else "0",
-            "attributes": otlp_attrs_from_dict(raw_attrs),
-            "status": otlp_status(span.get("statusCode"), span.get("statusMessage") or ""),
-        }
-        return otlp_span
+        # Phoenix's SpanKind (LLM, CHAIN, TOOL, …) is OpenInference's semantic
+        # kind, not OTLP's transport kind: every span is INTERNAL (the default).
+        return otlp_span(
+            ctx.get("traceId"),
+            span.get("spanId") or ctx.get("spanId"),
+            span.get("parentId"),
+            span.get("name"),
+            start_ns=_iso_to_ns(span.get("startTime")) or 0,
+            end_ns=_iso_to_ns(span.get("endTime")) or 0,
+            attrs=raw_attrs,
+            status=otlp_status(span.get("statusCode"), span.get("statusMessage") or ""),
+        )
 
     # ── Public API ───────────────────────────────────────────────────
 
@@ -469,37 +423,25 @@ class PhoenixAdapter(BackendAdapter):
             if f.name_prefix and not str(span.get("name") or "").startswith(f.name_prefix):
                 continue
             seen_traces.add(trace_id)
-            start_ns = _iso_to_ns(span.get("startTime"))
-            card_attrs = self._span_to_card_attrs(span)
-            # ``Trace.numSpans`` is the authoritative total — count
-            # spans across the whole trace, not just direct children of
-            # the root (which is what ``numChildSpans`` gives).
+            # ``Trace.numSpans`` is the authoritative total — count spans
+            # across the whole trace, not just direct children of the root
+            # (which is what ``numChildSpans`` gives), so the card never shows
+            # the matched-span count as if it were the trace size (#179).
             trace_span_count = (span.get("trace") or {}).get("numSpans")
             if not trace_span_count:
                 trace_span_count = 1 + int(span.get("numChildSpans") or 0)
             traces.append(
-                {
-                    "traceID": trace_id,
-                    # Whole-trace span count, so the card never shows the
-                    # matched-span count as if it were the trace size (#179).
-                    "spanCount": int(trace_span_count),
-                    "rootServiceName": project_name,
-                    "rootTraceName": span.get("name") or "",
-                    "startTimeUnixNano": str(start_ns) if start_ns else "0",
-                    "durationMs": int(span.get("latencyMs") or 0),
-                    "spanSets": [
-                        {
-                            "spans": [
-                                {
-                                    "spanID": span.get("spanId"),
-                                    "name": span.get("name") or "",
-                                    "attributes": otlp_attrs_from_dict(card_attrs),
-                                }
-                            ],
-                            "matched": int(trace_span_count),
-                        }
-                    ],
-                }
+                card_row(
+                    trace_id,
+                    span_id=span.get("spanId"),
+                    name=span.get("name"),
+                    attrs=self._span_to_card_attrs(span),
+                    start_ns=_iso_to_ns(span.get("startTime")) or 0,
+                    duration_ms=int(span.get("latencyMs") or 0),
+                    # A Phoenix project is the service (see ``filter_support``).
+                    service=project_name,
+                    span_count=int(trace_span_count),
+                )
             )
         page = trace_page(strictly_older_traces(traces, f), limit)
         if not f.roots_only and not page["has_more"] and len(edges) > int(limit) * 4 and traces:
@@ -523,7 +465,10 @@ class PhoenixAdapter(BackendAdapter):
         return page
 
     def trace_url(self, trace_id: str) -> Optional[str]:
-        project_id = self._resolve_project_id()
+        """The trace's page in the project, once a search or detail has
+        resolved the project; ``None`` before that. ``trace_url`` is a pure
+        read like ``status()``: it never queries the server (#403)."""
+        project_id = self._project_id_cache
         if not project_id:
             return None
         return f"{self.query_url}/projects/{project_id}/traces/{trace_id}"
@@ -581,15 +526,8 @@ class PhoenixAdapter(BackendAdapter):
             len(otlp_spans) >= _DETAIL_SPAN_CAP
         )
         span_count = trace.get("numSpans")
-
-        resource_attrs = otlp_attrs_from_dict({"service.name": project_name})
         return {
-            "batches": [
-                {
-                    "resource": {"attributes": resource_attrs},
-                    "scopeSpans": [{"spans": otlp_spans}],
-                }
-            ],
+            "batches": otlp_batches({project_name: otlp_spans}),
             "truncated": truncated,
             "span_count": int(span_count) if isinstance(span_count, int) else len(otlp_spans),
         }

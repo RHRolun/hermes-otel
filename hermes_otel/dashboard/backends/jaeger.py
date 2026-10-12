@@ -29,7 +29,6 @@ from .base import (
     BackendError,
     StructuredFilter,
     http_get_json,
-    otlp_attrs_from_dict,
     otlp_status,
     parse_kv_tokens,
     resolve_env_or_literal,
@@ -37,27 +36,19 @@ from .base import (
     strictly_older_traces,
     trace_page,
 )
+from .shapes import (
+    card_attrs,
+    card_row,
+    group_by_service,
+    otlp_attrs_to_dict,
+    otlp_batches,
+    otlp_span,
+    otlp_unwrap,
+    span_count_of,
+    to_int,
+)
 
 _DEFAULT_JAEGER_QUERY_PORT = 16686
-
-_CARD_TAGS = frozenset(
-    {
-        "llm.model_name",
-        "llm.provider",
-        "llm.api_mode",
-        "gen_ai.usage.input_tokens",
-        "gen_ai.usage.output_tokens",
-        "gen_ai.usage.total_tokens",
-        "llm.response.finish_reason",
-        "llm.response.tool_calls",
-        "tool.name",
-        "input.value",
-        "output.value",
-        "llm.output.content",
-        "hermes.session_id",
-        "hermes.turn.number",
-    }
-)
 
 
 def _tag_value(tag: Dict[str, Any]) -> Any:
@@ -79,17 +70,6 @@ def _tag_value(tag: Dict[str, Any]) -> Any:
     return v
 
 
-def _int(value: Any) -> int:
-    """A Jaeger numeric field (``startTime``, ``duration``), 0 when malformed."""
-    try:
-        return int(value or 0)
-    except (TypeError, ValueError):
-        try:
-            return int(float(value))
-        except (TypeError, ValueError):
-            return 0
-
-
 # Jaeger v2 serves only ``/api/v3/...`` on the query port (the classic routes
 # are 404, #245). The API is probed once per query URL; ``query_api: v1|v3``
 # on the entry pins it.
@@ -101,28 +81,6 @@ def _rfc3339(ns: int) -> str:
     secs, rem = divmod(int(ns), 1_000_000_000)
     base = _dt.datetime.fromtimestamp(secs, tz=_dt.timezone.utc).strftime("%Y-%m-%dT%H:%M:%S")
     return f"{base}.{rem:09d}Z"
-
-
-def _otlp_value(value: Any) -> Any:
-    """Unwrap an OTLP JSON ``AnyValue`` (``{"stringValue": ...}``)."""
-    if not isinstance(value, dict):
-        return value
-    for key in ("stringValue", "boolValue", "doubleValue"):
-        if key in value:
-            return value[key]
-    if "intValue" in value:
-        try:
-            return int(value["intValue"])
-        except (TypeError, ValueError):
-            return value["intValue"]
-    if "arrayValue" in value:
-        return [_otlp_value(v) for v in (value["arrayValue"] or {}).get("values") or []]
-    if "kvlistValue" in value:
-        return {
-            kv.get("key"): _otlp_value(kv.get("value"))
-            for kv in (value["kvlistValue"] or {}).get("values") or []
-        }
-    return value
 
 
 def _v3_traces_to_v1(data: Any) -> List[Dict[str, Any]]:
@@ -137,11 +95,7 @@ def _v3_traces_to_v1(data: Any) -> List[Dict[str, Any]]:
     for idx, rs in enumerate(resource_spans or []):
         if not isinstance(rs, dict):
             continue
-        res_attrs = {
-            a.get("key"): _otlp_value(a.get("value"))
-            for a in ((rs.get("resource") or {}).get("attributes") or [])
-            if isinstance(a, dict)
-        }
+        res_attrs = otlp_attrs_to_dict((rs.get("resource") or {}).get("attributes"))
         pid = f"p{idx}"
         process = {"serviceName": str(res_attrs.get("service.name") or ""), "tags": []}
         for scope in rs.get("scopeSpans") or []:
@@ -152,7 +106,7 @@ def _v3_traces_to_v1(data: Any) -> List[Dict[str, Any]]:
                 if not tid:
                     continue
                 tags = [
-                    {"key": a.get("key"), "type": "string", "value": _otlp_value(a.get("value"))}
+                    {"key": a.get("key"), "type": "string", "value": otlp_unwrap(a.get("value"))}
                     for a in sp.get("attributes") or []
                     if isinstance(a, dict) and a.get("key")
                 ]
@@ -171,8 +125,8 @@ def _v3_traces_to_v1(data: Any) -> List[Dict[str, Any]]:
                             "value": str(status.get("message")),
                         }
                     )
-                start_ns = _int(sp.get("startTimeUnixNano"))
-                end_ns = _int(sp.get("endTimeUnixNano"))
+                start_ns = to_int(sp.get("startTimeUnixNano"))
+                end_ns = to_int(sp.get("endTimeUnixNano"))
                 parent = sp.get("parentSpanId") or None
                 v1_span = {
                     "traceID": tid,
@@ -333,12 +287,9 @@ class JaegerAdapter(BackendAdapter):
 
     # ── Filter translation ───────────────────────────────────────────
 
-    def _parse_raw_tags(self, raw: Optional[str]) -> Dict[str, str]:
-        return parse_kv_tokens(raw)
-
     def _tags(self, f: StructuredFilter) -> Dict[str, Any]:
         tags: Dict[str, Any] = dict(f.attr_equals)
-        tags.update(self._parse_raw_tags(f.raw))
+        tags.update(parse_kv_tokens(f.raw))
         if f.status == "error":
             tags["error"] = "true"
         return tags
@@ -413,7 +364,7 @@ class JaegerAdapter(BackendAdapter):
                 return False
             if str(have).lower() != str(v).lower():
                 return False
-        if f.min_duration_ms and _int(root.get("duration")) < int(f.min_duration_ms) * 1000:
+        if f.min_duration_ms and to_int(root.get("duration")) < int(f.min_duration_ms) * 1000:
             return False
         return True
 
@@ -470,7 +421,7 @@ class JaegerAdapter(BackendAdapter):
                 card = next(
                     (
                         sp
-                        for sp in sorted(spans, key=lambda sp: _int(sp.get("startTime")))
+                        for sp in sorted(spans, key=lambda sp: to_int(sp.get("startTime")))
                         if str(sp.get("operationName") or "").startswith(f.name_prefix)
                     ),
                     None,
@@ -478,40 +429,19 @@ class JaegerAdapter(BackendAdapter):
                 if card is None:
                     continue
                 attrs = self._span_tags_as_dict(card)
-            processes = t.get("processes") or {}
-            service = self._service_name_for_span(card, processes)
-            # Keep only the card-relevant keys for the list payload; the
-            # detail view will expose the rest.
-            keep = {k: v for k, v in attrs.items() if k in _CARD_TAGS}
-            keep["name"] = card.get("operationName") or ""
-            if self._status_of(attrs).get("code") == 2:
-                keep["status"] = "error"
-
-            start_us = _int(card.get("startTime"))
-            start_ns = start_us * 1000 if start_us else 0
-            dur_us = _int(card.get("duration"))
-
+            service = self._service_name_for_span(card, t.get("processes") or {})
+            name = card.get("operationName") or ""
             traces.append(
-                {
-                    "traceID": trace_id,
-                    "spanCount": len(spans),
-                    "rootServiceName": service,
-                    "rootTraceName": card.get("operationName") or "",
-                    "startTimeUnixNano": str(start_ns) if start_ns else "0",
-                    "durationMs": dur_us // 1000 if dur_us else 0,
-                    "spanSets": [
-                        {
-                            "spans": [
-                                {
-                                    "spanID": card.get("spanID"),
-                                    "name": card.get("operationName") or "",
-                                    "attributes": otlp_attrs_from_dict(keep),
-                                }
-                            ],
-                            "matched": len(spans),
-                        }
-                    ],
-                }
+                card_row(
+                    trace_id,
+                    span_id=card.get("spanID"),
+                    name=name,
+                    attrs=card_attrs(attrs, name, self._status_of(attrs).get("code") == 2),
+                    start_ns=to_int(card.get("startTime")) * 1000,
+                    duration_ms=to_int(card.get("duration")) // 1000,
+                    service=service,
+                    span_count=len(spans),
+                )
             )
         return trace_page(strictly_older_traces(traces, f), limit)
 
@@ -531,11 +461,7 @@ class JaegerAdapter(BackendAdapter):
             result = data.get("result") if isinstance(data, dict) else None
             batches = (result or {}).get("resourceSpans") if isinstance(result, dict) else None
             batches = [b for b in (batches or []) if isinstance(b, dict)]
-            n = sum(
-                len((scope or {}).get("spans") or [])
-                for b in batches
-                for scope in b.get("scopeSpans") or []
-            )
+            n = span_count_of(batches)
             if n == 0:
                 raise BackendError(404, f"Trace {trace_id} not found in Jaeger", "not_found")
             return {"batches": batches, "span_count": n, "truncated": False}
@@ -546,45 +472,30 @@ class JaegerAdapter(BackendAdapter):
             raise BackendError(404, f"Trace {trace_id} not found in Jaeger", "not_found")
         trace = items[0] if isinstance(items, list) else items
         processes = trace.get("processes") or {}
-        spans = trace.get("spans") or []
+        spans = [sp for sp in trace.get("spans") or [] if isinstance(sp, dict)]
 
-        by_service: Dict[str, List[Dict[str, Any]]] = {}
-        for sp in spans:
-            if not isinstance(sp, dict):
-                continue
+        def one(sp: Dict[str, Any]) -> Dict[str, Any]:
             attrs = self._span_tags_as_dict(sp)
-            service = self._service_name_for_span(sp, processes)
-            refs = sp.get("references") or []
-            parent = None
-            for r in refs:
-                if r.get("refType") == "CHILD_OF" and r.get("spanID"):
-                    parent = r["spanID"]
-                    break
-            start_us = _int(sp.get("startTime"))
-            dur_us = _int(sp.get("duration"))
-            start_ns = start_us * 1000
-            end_ns = (start_us + dur_us) * 1000
-
-            otlp_span = {
-                "traceId": trace_id,
-                "spanId": sp.get("spanID"),
-                "parentSpanId": parent or None,
-                "name": sp.get("operationName") or "",
-                "kind": 1,
-                "startTimeUnixNano": str(start_ns) if start_ns else "0",
-                "endTimeUnixNano": str(end_ns) if end_ns else "0",
-                "attributes": otlp_attrs_from_dict(attrs),
-                "status": self._status_of(attrs),
-            }
-            by_service.setdefault(service, []).append(otlp_span)
-
-        batches = []
-        for service, spans_list in by_service.items():
-            resource_attrs = otlp_attrs_from_dict({"service.name": service} if service else {})
-            batches.append(
-                {
-                    "resource": {"attributes": resource_attrs},
-                    "scopeSpans": [{"spans": spans_list}],
-                }
+            parent = next(
+                (
+                    r["spanID"]
+                    for r in sp.get("references") or []
+                    if r.get("refType") == "CHILD_OF" and r.get("spanID")
+                ),
+                None,
             )
+            start_us = to_int(sp.get("startTime"))
+            return otlp_span(
+                trace_id,
+                sp.get("spanID"),
+                parent,
+                sp.get("operationName"),
+                start_ns=start_us * 1000,
+                end_ns=(start_us + to_int(sp.get("duration"))) * 1000,
+                attrs=attrs,
+                status=self._status_of(attrs),
+            )
+
+        by_service = group_by_service(spans, lambda sp: self._service_name_for_span(sp, processes))
+        batches = otlp_batches({svc: [one(sp) for sp in sps] for svc, sps in by_service.items()})
         return {"batches": batches, "span_count": len(spans), "truncated": False}

@@ -25,7 +25,6 @@ from .base import (
     BackendAdapter,
     BackendError,
     ConfigError,
-    HTTPException,
     LogFilter,
     StructuredFilter,
     bucketize,
@@ -36,7 +35,6 @@ from .base import (
     log_end_ns,
     ns_from_any,
     ns_from_magnitude,
-    otlp_attrs_from_dict,
     otlp_status,
     resolve_env_or_literal,
     rewrite_host_for_docker,
@@ -44,8 +42,14 @@ from .base import (
     strictly_older_traces,
     trace_page,
 )
-
-__all__ = ["SigNozAdapter", "HTTPException"]
+from .shapes import (
+    CARD_ATTRIBUTE_KEYS,
+    card_row,
+    group_by_service,
+    otlp_batches,
+    otlp_span,
+    span_count_of,
+)
 
 _DEFAULT_SIGNOZ_PORT = 3301
 # The trace detail asks for this many spans and says so when there are more.
@@ -83,23 +87,6 @@ _SIGNOZ_SELECT_COLUMNS: List[Dict[str, Any]] = [
     {"key": "kind", "isColumn": True, "dataType": "int64", "type": "tag"},
 ]
 
-_TAG_KEYS_TO_COLLECT = (
-    "llm.model_name",
-    "llm.provider",
-    "llm.api_mode",
-    "gen_ai.usage.input_tokens",
-    "gen_ai.usage.output_tokens",
-    "gen_ai.usage.total_tokens",
-    "llm.response.finish_reason",
-    "llm.response.tool_calls",
-    "tool.name",
-    "input.value",
-    "output.value",
-    "llm.output.content",
-    "hermes.session_id",
-    "hermes.turn.number",
-)
-
 # The card attributes are span tags, not columns; a ``list`` panel returns
 # only the columns it is asked for, so they are requested explicitly (#297).
 # Numeric attributes live in SigNoz's number map: asked for as strings they
@@ -114,7 +101,7 @@ _NUMERIC_TAG_KEYS = frozenset(
 )
 _SIGNOZ_SELECT_COLUMNS += [
     {"key": k, "type": "tag", "dataType": "float64" if k in _NUMERIC_TAG_KEYS else "string"}
-    for k in _TAG_KEYS_TO_COLLECT
+    for k in CARD_ATTRIBUTE_KEYS
 ]
 
 
@@ -403,36 +390,24 @@ class SigNozAdapter(BackendAdapter):
             if trace_id in seen:
                 continue
             seen[trace_id] = row
-            start_ns = _ns_from_row(row)
-            duration_ns = int(row.get("durationNano") or 0)
+            # SigNoz always has a status: ``ok`` is said, not only ``error``.
             attrs_map: Dict[str, Any] = {
                 "name": row.get("name"),
                 "status": "error" if row.get("hasError") or row.get("statusCode") == 2 else "ok",
             }
-            for k in _TAG_KEYS_TO_COLLECT:
-                v = row.get(k)
-                if v is not None:
-                    attrs_map[k] = v
+            attrs_map.update({k: row[k] for k in CARD_ATTRIBUTE_KEYS if row.get(k) is not None})
             traces.append(
-                {
-                    "traceID": trace_id,
-                    "rootServiceName": row.get("serviceName") or "",
-                    "rootTraceName": row.get("name") or "",
-                    "startTimeUnixNano": str(start_ns) if start_ns else "0",
-                    "durationMs": duration_ns // 1_000_000 if duration_ns else 0,
-                    "spanSets": [
-                        {
-                            "spans": [
-                                {
-                                    "spanID": row.get("spanID") or row.get("spanId"),
-                                    "name": row.get("name") or "",
-                                    "attributes": otlp_attrs_from_dict(attrs_map),
-                                }
-                            ],
-                            "matched": 1,
-                        }
-                    ],
-                }
+                card_row(
+                    trace_id,
+                    span_id=row.get("spanID") or row.get("spanId"),
+                    name=row.get("name"),
+                    attrs=attrs_map,
+                    start_ns=_ns_from_row(row) or 0,
+                    duration_ms=int(row.get("durationNano") or 0) // 1_000_000,
+                    service=row.get("serviceName") or "",
+                    # The list is one row per trace; the trace's span count is
+                    # not among the columns, so none is claimed.
+                )
             )
         return trace_page(strictly_older_traces(traces, f), limit)
 
@@ -464,11 +439,7 @@ class SigNozAdapter(BackendAdapter):
                 timeout=20.0,
             )
         out = signoz_trace_to_otlp(data)
-        n = sum(
-            len(scope.get("spans") or [])
-            for batch in out.get("batches") or []
-            for scope in batch.get("scopeSpans") or []
-        )
+        n = span_count_of(out.get("batches") or [])
         if n == 0:
             raise BackendError(404, f"Trace {trace_id} not found in SigNoz", "not_found")
         out["span_count"] = n
@@ -866,50 +837,36 @@ def signoz_trace_to_otlp(data: Any) -> Dict[str, Any]:
     if not isinstance(spans_raw, list):
         return {"batches": []}
 
-    by_service: Dict[str, List[Dict[str, Any]]] = {}
-    for sp in spans_raw:
-        if not isinstance(sp, dict):
-            continue
-        service = sp.get("serviceName") or ""
+    def one(sp: Dict[str, Any]) -> Dict[str, Any]:
         attrs: Dict[str, Any] = {}
         tagmap = sp.get("tagMap") or sp.get("tagsMap") or sp.get("tags") or {}
         if isinstance(tagmap, dict):
-            for k, v in tagmap.items():
-                attrs[k] = v
+            attrs.update(tagmap)
         elif isinstance(tagmap, list):
             for t in tagmap:
                 if isinstance(t, dict) and "key" in t:
                     attrs[t["key"]] = t.get("value")
-
-        start_ns = _ns_from_row(sp)
-        duration_ns = int(sp.get("durationNano") or 0)
-        end_ns = (start_ns + duration_ns) if start_ns else 0
-
-        otlp_span = {
-            "traceId": sp.get("traceID") or sp.get("traceId"),
-            "spanId": sp.get("spanID") or sp.get("spanId"),
-            "parentSpanId": sp.get("parentSpanID") or sp.get("parentSpanId") or None,
-            "name": sp.get("name") or "",
-            "kind": int(sp.get("kind") or 1),
-            "startTimeUnixNano": str(start_ns) if start_ns else "0",
-            "endTimeUnixNano": str(end_ns) if end_ns else "0",
-            "attributes": otlp_attrs_from_dict(attrs),
-            "status": otlp_status(
+        start_ns = _ns_from_row(sp) or 0
+        return otlp_span(
+            sp.get("traceID") or sp.get("traceId"),
+            sp.get("spanID") or sp.get("spanId"),
+            sp.get("parentSpanID") or sp.get("parentSpanId"),
+            sp.get("name"),
+            start_ns=start_ns,
+            end_ns=(start_ns + int(sp.get("durationNano") or 0)) if start_ns else 0,
+            attrs=attrs,
+            status=otlp_status(
                 "error" if sp.get("hasError") else "ok", str(sp.get("statusMessage") or "")
             ),
-        }
-        by_service.setdefault(service, []).append(otlp_span)
-
-    batches = []
-    for service, spans in by_service.items():
-        resource_attrs = otlp_attrs_from_dict({"service.name": service} if service else {})
-        batches.append(
-            {
-                "resource": {"attributes": resource_attrs},
-                "scopeSpans": [{"spans": spans}],
-            }
+            kind=int(sp.get("kind") or 1),
         )
-    return {"batches": batches}
+
+    by_service = group_by_service(
+        [sp for sp in spans_raw if isinstance(sp, dict)], lambda sp: sp.get("serviceName")
+    )
+    return {
+        "batches": otlp_batches({svc: [one(sp) for sp in sps] for svc, sps in by_service.items()})
+    }
 
 
 # Private spellings kept for one release (#411): import the public names.
