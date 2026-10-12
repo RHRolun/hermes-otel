@@ -23,11 +23,14 @@ from .base import (
     BackendError,
     StructuredFilter,
     http_post_json,
+    not_found,
     otlp_status,
     resolve_env_or_literal,
     rewrite_host_for_docker,
     strictly_older_traces,
+    trace_end_bound,
     trace_page,
+    widened_fetch,
 )
 from .shapes import CARD_ATTRIBUTE_SET, card_row, flatten_dotted, otlp_batches, otlp_span
 
@@ -315,13 +318,13 @@ class PhoenixAdapter(BackendAdapter):
         if f.roots_only and not legacy_root_args:
             # Current Phoenix: roots are a filter-condition predicate.
             fc = "parent_id is None" + (f" and {fc}" if fc else "")
-        end_ns = end_s * 1_000_000_000
-        if f.before_ns:
-            end_ns = min(end_ns, int(f.before_ns))
         time_range = {
             "start": _ns_to_iso(start_s * 1_000_000_000),
-            "end": _ns_to_iso(end_ns),
+            "end": _ns_to_iso(trace_end_bound(f, end_s, "ns")),
         }
+        # Widened (the kind filter) the rows are spans and several of one
+        # trace share a page, so ask for more and dedupe below.
+        fetch = widened_fetch(limit, f.roots_only)
 
         # Phoenix's ``rootSpansOnly`` honours the companion
         # ``orphanSpanAsRootSpan`` flag, which defaults to True and
@@ -373,10 +376,7 @@ class PhoenixAdapter(BackendAdapter):
             query,
             {
                 "projectId": project_id,
-                # One beyond the page so has_more is exact (trace_page). Widened
-                # (the kind filter) the rows are spans and several of one trace
-                # share a page, so ask for more and dedupe below.
-                "first": int(limit) + 1 if f.roots_only else int(limit) * 4 + 1,
+                "first": fetch,
                 "timeRange": time_range,
                 "filterCondition": fc,
                 **(
@@ -444,7 +444,7 @@ class PhoenixAdapter(BackendAdapter):
                 )
             )
         page = trace_page(strictly_older_traces(traces, f), limit)
-        if not f.roots_only and not page["has_more"] and len(edges) > int(limit) * 4 and traces:
+        if not f.roots_only and not page["has_more"] and len(edges) >= fetch and traces:
             # The fetch came back full: older spans exist even though they
             # collapsed into fewer traces than the page holds.
             page["has_more"] = True
@@ -476,8 +476,10 @@ class PhoenixAdapter(BackendAdapter):
     def get_trace(self, trace_id: str) -> Dict[str, Any]:
         project_id = self._resolve_project_id()
         if not project_id:
-            raise BackendError(
-                404, f"Trace {trace_id} not found in Phoenix (no project has traces)", "not_found"
+            raise not_found(
+                trace_id,
+                "Phoenix",
+                f"Trace {trace_id} not found in Phoenix (no project has traces)",
             )
 
         query = """
@@ -510,18 +512,15 @@ class PhoenixAdapter(BackendAdapter):
         project = data.get("node") or {}
         project_name = project.get("name") or "phoenix"
         trace = project.get("trace") or {}
+        missing = f"Trace {trace_id} not found in Phoenix project {project_name!r}"
         if not trace:
-            raise BackendError(
-                404, f"Trace {trace_id} not found in Phoenix project {project_name!r}", "not_found"
-            )
+            raise not_found(trace_id, "Phoenix", missing)
         spans_conn = trace.get("spans") or {}
         edges = spans_conn.get("edges") or []
 
         otlp_spans = [self._span_node_to_otlp(e["node"]) for e in edges if e.get("node")]
         if not otlp_spans:
-            raise BackendError(
-                404, f"Trace {trace_id} not found in Phoenix project {project_name!r}", "not_found"
-            )
+            raise not_found(trace_id, "Phoenix", missing)
         truncated = bool((spans_conn.get("pageInfo") or {}).get("hasNextPage")) or (
             len(otlp_spans) >= _DETAIL_SPAN_CAP
         )

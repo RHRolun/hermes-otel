@@ -26,7 +26,7 @@ import os
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 from urllib import error as _urlerror
 from urllib import parse as _urlparse
 from urllib import request as _urlrequest
@@ -145,6 +145,12 @@ class StructuredFilter:
     """
 
     service: Optional[str] = None
+    # The search bar's span-name field. Despite the name it is an EXACT match
+    # on most backends (Jaeger ``operation=``, Zipkin ``spanName=``, Phoenix
+    # ``name ==``, ClickHouse ``SpanName =``, Langfuse ``name=`` ...) and a
+    # regex only where the backend's query language has one (TraceQL, SigNoz).
+    # Renaming the field is a UI change; until then this is the contract, and
+    # ``span_matches`` re-checks it as an exact match.
     name_regex: Optional[str] = None
     # The kind filter (#292): a span-name prefix such as ``tool.`` or ``agent``.
     # Every backend can express a prefix (a regex anchor, ``like 'x%'``, a
@@ -279,6 +285,119 @@ def parse_kv_tokens(raw: Optional[str]) -> Dict[str, str]:
             if k.strip() and v.strip():
                 out[k.strip()] = v.strip().strip("\"'")
     return out
+
+
+# ── The search template (#403): what every adapter's search() does ─────
+#
+# Bound the window by the cursor, over-fetch when the rows are spans rather
+# than traces, find each trace's root, re-check the structured predicates on
+# a span the backend could only match loosely, and say when the fetch came
+# back full. Each piece used to be copied into ten adapters, each with its
+# own spelling.
+
+_UNIT_DIV = {"ns": 1, "us": 1_000, "ms": 1_000_000, "s": 1_000_000_000}
+
+
+def trace_end_bound(
+    f: StructuredFilter, end_s: int, unit: str = "ns", round_up: bool = False
+) -> int:
+    """The query's end bound in ``unit`` (``ns`` / ``us`` / ``ms`` / ``s``):
+    the window end, tightened by the paging cursor when there is one.
+    ``round_up`` adds one unit for a backend that bounds time at that
+    precision, so the row the cursor was taken from stays inside the window
+    and :func:`strictly_older_traces` makes the cut exact afterwards."""
+    div = _UNIT_DIV[unit]
+    end = int(end_s) * (1_000_000_000 // div)
+    if f.before_ns:
+        end = min(end, int(f.before_ns) // div + (1 if round_up else 0))
+    return end
+
+
+def widened_fetch(
+    limit: int, roots_only: bool, rows_per_trace: int = 4, inclusive: bool = False
+) -> int:
+    """How many rows to ask for: one beyond the page when every row is a
+    trace (so ``has_more`` is exact), several per requested trace when the
+    rows are spans (a widened search returns the matching spans, several of
+    one trace, and they are folded into one card each). ``inclusive`` is the
+    other spelling in use, ``(limit + 1) * rows_per_trace``."""
+    n = int(limit)
+    if roots_only:
+        return n + 1
+    return (n + 1) * rows_per_trace if inclusive else n * rows_per_trace + 1
+
+
+def root_of(
+    spans: Sequence[Dict[str, Any]],
+    span_id: Callable[[Dict[str, Any]], Any],
+    parent_id: Callable[[Dict[str, Any]], Any],
+) -> Optional[Dict[str, Any]]:
+    """The trace's root among ``spans``: the first whose parent is absent or
+    not among them (an orphan whose parent was cut counts; a caller that must
+    tell a true root from an orphan checks ``parent_id`` again)."""
+    if not spans:
+        return None
+    ids = {span_id(sp) for sp in spans}
+    for sp in spans:
+        parent = parent_id(sp)
+        if not parent or parent not in ids:
+            return sp
+    return spans[0]
+
+
+def span_matches(
+    f: StructuredFilter,
+    *,
+    name: str,
+    attrs: Dict[str, Any],
+    duration_ns: Optional[int] = None,
+    error: Optional[bool] = None,
+    text: Optional[str] = None,
+    equals: Optional[Dict[str, Any]] = None,
+) -> bool:
+    """Re-check the structured predicates on one span, for a backend whose
+    query matched any span of the trace (Jaeger's ``tags=``, Zipkin's
+    ``annotationQuery``) or none at all (Aspire). ``equals`` replaces
+    ``f.attr_equals`` when the adapter folded its raw tags into the same
+    dict; ``error`` is the span's status (``None`` skips the status check);
+    ``text`` is what the free-text search reads (``None`` skips it). Names
+    are exact (see ``StructuredFilter.name_regex``); attribute values compare
+    case-insensitively as strings."""
+    if f.name_prefix and not name.startswith(f.name_prefix):
+        return False
+    if f.name_regex and name != f.name_regex:
+        return False
+    for k, v in (f.attr_equals if equals is None else equals).items():
+        have = attrs.get(k)
+        if have is None or str(have).lower() != str(v).lower():
+            return False
+    if f.min_duration_ms and duration_ns is not None:
+        if duration_ns < int(f.min_duration_ms) * 1_000_000:
+            return False
+    if error is not None:
+        if f.status == "error" and not error:
+            return False
+        if f.status == "ok" and error:
+            return False
+    if f.free_text and text is not None and f.free_text.lower() not in text.lower():
+        return False
+    return True
+
+
+def mark_full_fetch(
+    page: Dict[str, Any], fetched: int, fetch: int, widened: bool
+) -> Dict[str, Any]:
+    """A widened search fetched spans, several per trace, so a full fetch
+    means older rows exist even when they collapsed into fewer traces than
+    the page holds: say so."""
+    if widened and fetched >= fetch:
+        page["has_more"] = True
+    return page
+
+
+def not_found(trace_id: str, backend: str, detail: Optional[str] = None) -> BackendError:
+    """The ``not_found`` error every ``get_trace`` raises for an unknown id."""
+    return BackendError(404, detail or f"Trace {trace_id} not found in {backend}", "not_found")
 
 
 _METRIC_NAME_RE = re.compile(r"^[A-Za-z_:][A-Za-z0-9_:.]*$")

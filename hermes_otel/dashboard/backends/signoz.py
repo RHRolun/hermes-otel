@@ -33,6 +33,7 @@ from .base import (
     http_get_json,
     http_post_json,
     log_end_ns,
+    not_found,
     ns_from_any,
     ns_from_magnitude,
     otlp_status,
@@ -40,7 +41,9 @@ from .base import (
     rewrite_host_for_docker,
     strictly_older,
     strictly_older_traces,
+    trace_end_bound,
     trace_page,
+    widened_fetch,
 )
 from .shapes import (
     CARD_ATTRIBUTE_KEYS,
@@ -328,18 +331,13 @@ class SigNozAdapter(BackendAdapter):
     def _build_query_body(
         self, f: StructuredFilter, start_s: int, end_s: int, limit: int
     ) -> Dict[str, Any]:
-        end_ms = _ms(end_s)
-        if f.before_ns:
-            # The cursor is the end bound (ms, rounded up so the row it was
-            # taken from stays inside); strictly_older_traces() cuts exactly.
-            end_ms = min(end_ms, int(f.before_ns) // 1_000_000 + 1)
         # ``limit`` counts span rows; without roots-only several rows of one
-        # trace share a page, so ask for more and dedupe (#297). One beyond
-        # the page so has_more is exact.
-        rows_wanted = int(limit) + 1 if f.roots_only else int(limit) * 4 + 1
+        # trace share a page, so ask for more and dedupe (#297).
+        rows_wanted = widened_fetch(limit, f.roots_only)
         body = {
             "start": _ms(start_s),
-            "end": end_ms,
+            # SigNoz bounds time in ms: the cursor rounds up so its row stays inside.
+            "end": trace_end_bound(f, end_s, "ms", round_up=True),
             "step": 60,
             "compositeQuery": {
                 "queryType": "builder",
@@ -429,7 +427,7 @@ class SigNozAdapter(BackendAdapter):
             data = http_get_json(url, headers=headers, timeout=20.0)
         except BackendError as exc:
             if exc.kind == "not_found":
-                raise BackendError(404, f"Trace {trace_id} not found in SigNoz", "not_found")
+                raise not_found(trace_id, "SigNoz")
             if exc.kind != "backend" or "Backend returned 4" not in str(exc.detail):
                 raise
             data = http_post_json(
@@ -441,7 +439,7 @@ class SigNozAdapter(BackendAdapter):
         out = signoz_trace_to_otlp(data)
         n = span_count_of(out.get("batches") or [])
         if n == 0:
-            raise BackendError(404, f"Trace {trace_id} not found in SigNoz", "not_found")
+            raise not_found(trace_id, "SigNoz")
         out["span_count"] = n
         out["truncated"] = n >= _DETAIL_SPAN_CAP
         return out

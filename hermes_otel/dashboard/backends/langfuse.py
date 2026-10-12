@@ -39,12 +39,14 @@ from .base import (
     ConfigError,
     StructuredFilter,
     http_get_json,
+    not_found,
     otlp_attrs_from_dict,
     otlp_status,
     parse_kv_tokens,
     resolve_env_or_literal,
     rewrite_host_for_docker,
     strictly_older_traces,
+    trace_end_bound,
     trace_page,
 )
 from .shapes import card_row, otlp_batches, otlp_span
@@ -382,9 +384,7 @@ class LangfuseAdapter(BackendAdapter):
         widened = bool(not f.roots_only and prefix)
         obs_type = _OBSERVATION_TYPES.get(prefix.rstrip(".")) if widened else "AGENT"
         want = int(limit) + 1
-        end_s_eff = int(end_s)
-        if f.before_ns:
-            end_s_eff = min(end_s_eff, int(f.before_ns) // 1_000_000_000 + 1)
+        end_s_eff = trace_end_bound(f, end_s, "s", round_up=True)
         session = f.attr_equals.get("hermes.session_id") or f.attr_equals.get("sessionId")
         rows: List[Dict[str, Any]] = []
         card_attrs: Dict[str, Dict[str, Any]] = {}
@@ -458,7 +458,7 @@ class LangfuseAdapter(BackendAdapter):
             if len(items) < _MAX_PAGE_SIZE:
                 break
         if not observations:
-            raise BackendError(404, f"Trace {trace_id} not found in Langfuse", "not_found")
+            raise not_found(trace_id, "Langfuse")
         spans_otlp: List[Dict[str, Any]] = []
         for obs in observations:
             attrs: Dict[str, Any] = {"name": _span_name(obs)}
@@ -638,9 +638,7 @@ class LangfuseAdapter(BackendAdapter):
         want = int(limit) + 1
         rows: List[Dict[str, Any]] = []
         seen: set = set()
-        end_s_eff = int(end_s)
-        if f.before_ns:
-            end_s_eff = min(end_s_eff, int(f.before_ns) // 1_000_000_000 + 1)
+        end_s_eff = trace_end_bound(f, end_s, "s", round_up=True)
         for page in range(1, _MAX_PAGES + 1):
             params: Dict[str, Any] = {
                 "page": page,
@@ -797,7 +795,7 @@ class LangfuseAdapter(BackendAdapter):
         url = f"{self.query_url}/api/public/traces/{trace_id}"
         data = http_get_json(url, headers=self._headers(), timeout=20.0)
         if not isinstance(data, dict) or not data.get("id"):
-            raise BackendError(404, f"Trace {trace_id} not found in Langfuse", "not_found")
+            raise not_found(trace_id, "Langfuse")
 
         observations = [o for o in (data.get("observations") or []) if isinstance(o, dict)]
         spans_otlp: List[Dict[str, Any]] = []

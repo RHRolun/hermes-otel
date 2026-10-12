@@ -29,12 +29,15 @@ from .base import (
     finish_log_row,
     http_get_json,
     http_post_json,
+    not_found,
     otlp_status,
     resolve_env_or_literal,
     rewrite_host_for_docker,
     strictly_older,
     strictly_older_traces,
+    trace_end_bound,
     trace_page,
+    widened_fetch,
 )
 from .shapes import CARD_ATTRIBUTE_KEYS, card_row, group_by_service, otlp_batches, otlp_span
 
@@ -223,16 +226,12 @@ class OpenObserveAdapter(BackendAdapter):
     def search(self, f: StructuredFilter, start_s: int, end_s: int, limit: int) -> Dict[str, Any]:
         where = self._build_where(f)
         url = f"{self.query_url}/api/{self.org}/_search?type=traces"
-        end_us = int(end_s) * 1_000_000
-        if f.before_ns:
-            # The cursor is the end bound (µs, rounded up so the row it was
-            # taken from stays inside); strictly_older_traces() cuts exactly.
-            end_us = min(end_us, int(f.before_ns) // 1000 + 1)
-
-        # One row beyond the page so has_more is exact. Without roots-only
-        # several rows of one trace share a page, so ask for more and dedupe.
-        want = int(limit) + 1
-        wide = int(limit) * 4 + 1
+        # OpenObserve bounds time in µs: the cursor rounds up so its row stays inside.
+        end_us = trace_end_bound(f, end_s, "us", round_up=True)
+        # Without roots-only several rows of one trace share a page, so ask
+        # for more and dedupe.
+        want = widened_fetch(limit, True)
+        wide = widened_fetch(limit, False)
         # Roots only: the stream names the parent in one of two columns
         # depending on the OpenObserve version. Each spelling is tried in
         # turn; a later attempt runs ONLY when the earlier one was rejected
@@ -648,11 +647,11 @@ class OpenObserveAdapter(BackendAdapter):
         hits = data.get("hits") if isinstance(data, dict) else None
         rows = [h for h in (hits if isinstance(hits, list) else []) if isinstance(h, dict)]
         if not rows:
-            raise BackendError(
-                404,
+            raise not_found(
+                trace_id,
+                "OpenObserve",
                 f"Trace {trace_id} not found in OpenObserve stream {self.stream!r} "
                 f"(last {self.trace_window_days} days)",
-                "not_found",
             )
         out = _rows_to_otlp(rows)
         out["span_count"] = len(rows)

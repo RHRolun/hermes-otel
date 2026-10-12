@@ -33,8 +33,10 @@ from .base import (
     LogFilter,
     StructuredFilter,
     http_get_json,
+    not_found,
     rewrite_host_for_docker,
     strictly_older_traces,
+    trace_end_bound,
     trace_page,
 )
 from .shapes import CARD_ATTRIBUTE_KEYS, span_count_of
@@ -293,12 +295,9 @@ class TempoAdapter(BackendAdapter):
         return base + " | select(" + ", ".join(_CARD_SELECT_ATTRS) + ")"
 
     def _search_params(self, f: StructuredFilter, start_s: int, end_s: int, limit: int, q: str):
-        end = int(end_s)
-        if f.before_ns:
-            # Tempo bounds the search in whole seconds; the cursor rounds up
-            # so the row it was taken from is still inside the window and
-            # strictly_older_traces() drops it exactly.
-            end = min(end, int(f.before_ns) // 1_000_000_000 + 1)
+        # Tempo bounds the search in whole seconds; the cursor rounds up so
+        # the row it was taken from is still inside the window.
+        end = trace_end_bound(f, end_s, "s", round_up=True)
         params: Dict[str, Any] = {
             # Tempo stops at ``limit`` matches in whatever order its blocks
             # answer, not the newest ones (verified on Tempo 3.0.3: ``limit=3``
@@ -429,10 +428,10 @@ class TempoAdapter(BackendAdapter):
         url = f"{self.query_url}/api/traces/{trace_id}"
         data = _dedupe_spans(http_get_json(url, timeout=20.0))
         if not isinstance(data, dict):
-            raise BackendError(404, f"Trace {trace_id} not found in Tempo", "not_found")
+            raise not_found(trace_id, "Tempo")
         n = span_count_of(data.get("batches") or [])
         if n == 0:
-            raise BackendError(404, f"Trace {trace_id} not found in Tempo", "not_found")
+            raise not_found(trace_id, "Tempo")
         data["span_count"] = n
         data.setdefault("truncated", False)
         return data

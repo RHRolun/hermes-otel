@@ -33,11 +33,15 @@ from .base import (
     BackendError,
     StructuredFilter,
     http_get_json,
+    not_found,
     otlp_status,
     parse_kv_tokens,
     resolve_env_or_literal,
     rewrite_host_for_docker,
+    root_of,
+    span_matches,
     strictly_older_traces,
+    trace_end_bound,
     trace_page,
 )
 from .shapes import (
@@ -160,11 +164,7 @@ class ZipkinAdapter(BackendAdapter):
     def _build_query(
         self, f: StructuredFilter, start_s: int, end_s: int, limit: int
     ) -> List[Tuple[str, str]]:
-        end_ms = int(end_s) * 1000
-        if f.before_ns:
-            # The cursor is the query's end bound (ms); strictly_older_traces()
-            # makes the cut exact afterwards.
-            end_ms = min(end_ms, int(f.before_ns) // 1_000_000)
+        end_ms = trace_end_bound(f, end_s, "ms")
         lookback_ms = max(1, end_ms - int(start_s) * 1000)
         params: List[Tuple[str, str]] = [
             ("serviceName", f.service or self.default_service),
@@ -189,35 +189,22 @@ class ZipkinAdapter(BackendAdapter):
         tags = span.get("tags") or {}
         return {k: coerce_tag(k, v) for k, v in tags.items() if isinstance(k, str)}
 
-    @staticmethod
-    def _find_root(spans: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-        ids = {sp.get("id") for sp in spans}
-        for sp in spans:
-            parent = sp.get("parentId")
-            if not parent or parent not in ids:
-                return sp
-        return spans[0] if spans else None
-
     def _root_matches(
         self, root: Dict[str, Any], attrs: Dict[str, Any], f: StructuredFilter
     ) -> bool:
         """Whether the ROOT span itself satisfies the filter: ``annotationQuery``
         and ``spanName`` match any span of a trace, so roots-only re-checks the
-        same predicates on the root (#295)."""
+        same predicates on the root (#295); an orphan (its real root outside
+        the window) is no root."""
         if root.get("parentId"):
-            return False  # an orphan: its real root is outside the window
-        name = root.get("name") or ""
-        if f.name_prefix and not name.startswith(f.name_prefix):
             return False
-        if f.name_regex and name != f.name_regex:
-            return False
-        for k, v in self._tags(f).items():
-            have = attrs.get(k)
-            if have is None or str(have).lower() != str(v).lower():
-                return False
-        if f.min_duration_ms and to_int(root.get("duration")) < int(f.min_duration_ms) * 1000:
-            return False
-        return True
+        return span_matches(
+            f,
+            name=root.get("name") or "",
+            attrs=attrs,
+            duration_ns=to_int(root.get("duration")) * 1000,
+            equals=self._tags(f),
+        )
 
     @staticmethod
     def _status_of(attrs: Dict[str, Any]) -> Dict[str, Any]:
@@ -257,7 +244,7 @@ class ZipkinAdapter(BackendAdapter):
             if not spans:
                 continue
             trace_id = spans[0].get("traceId")
-            root = self._find_root(spans)
+            root = root_of(spans, lambda sp: sp.get("id"), lambda sp: sp.get("parentId"))
             if not trace_id or root is None:
                 continue
             attrs = self._attrs(root)
@@ -306,11 +293,11 @@ class ZipkinAdapter(BackendAdapter):
             data = http_get_json(url, headers=self._headers(), timeout=20.0)
         except BackendError as exc:
             if exc.kind == "not_found":
-                raise BackendError(404, f"Trace {trace_id} not found in Zipkin", "not_found")
+                raise not_found(trace_id, "Zipkin")
             raise
         spans = [sp for sp in (data if isinstance(data, list) else []) if isinstance(sp, dict)]
         if not spans:
-            raise BackendError(404, f"Trace {trace_id} not found in Zipkin", "not_found")
+            raise not_found(trace_id, "Zipkin")
 
         def one(sp: Dict[str, Any]) -> Dict[str, Any]:
             attrs = self._attrs(sp)

@@ -30,15 +30,18 @@ from urllib import parse as _urlparse
 from . import default_service_name, register
 from .base import (
     BackendAdapter,
-    BackendError,
     ConfigError,
     StructuredFilter,
     http_post_json,
+    mark_full_fetch,
+    not_found,
     parse_kv_tokens,
     resolve_env_or_literal,
     rewrite_host_for_docker,
     strictly_older_traces,
+    trace_end_bound,
     trace_page,
+    widened_fetch,
 )
 from .shapes import card_attrs, card_row, flatten_dotted, otlp_batches, otlp_span
 from .victoria import rfc3339_to_ns
@@ -178,14 +181,11 @@ class AgentaAdapter(BackendAdapter):
         return bodies
 
     def _body(self, f: StructuredFilter, start_s: int, end_s: int, limit: int) -> Dict[str, Any]:
-        end_ns = int(end_s) * 1_000_000_000
-        if f.before_ns:
-            end_ns = min(end_ns, int(f.before_ns))
         body: Dict[str, Any] = {
             "formatting": {"focus": "span", "format": "agenta"},
             "windowing": {
                 "oldest": iso(int(start_s) * 1_000_000_000),
-                "newest": iso(end_ns),
+                "newest": iso(trace_end_bound(f, end_s, "ns")),
                 "limit": int(limit),
                 "order": "descending",
             },
@@ -232,7 +232,7 @@ class AgentaAdapter(BackendAdapter):
     # ── public API ───────────────────────────────────────────────────
 
     def search(self, f: StructuredFilter, start_s: int, end_s: int, limit: int) -> Dict[str, Any]:
-        fetch = int(limit) + 1 if f.roots_only else (int(limit) + 1) * _ROWS_PER_TRACE
+        fetch = widened_fetch(limit, f.roots_only, _ROWS_PER_TRACE, inclusive=True)
         seen: set = set()
         spans: List[Dict[str, Any]] = []
         for body in self._bodies(f, start_s, end_s, fetch):
@@ -275,9 +275,7 @@ class AgentaAdapter(BackendAdapter):
                 )
             )
         page = trace_page(strictly_older_traces(rows, f), limit)
-        if not f.roots_only and len(spans) >= fetch:
-            page["has_more"] = True
-        return page
+        return mark_full_fetch(page, len(spans), fetch, widened=not f.roots_only)
 
     def trace_url(self, trace_id: str) -> Optional[str]:
         # The observability page lives under /w/<workspace>/p/<project>/…, ids
@@ -293,7 +291,7 @@ class AgentaAdapter(BackendAdapter):
             }
         )
         if not spans:
-            raise BackendError(404, f"Trace {trace_id} not found in Agenta", "not_found")
+            raise not_found(trace_id, "Agenta")
         otlp = []
         for sp in spans:
             start, end = self._times(sp)

@@ -48,14 +48,18 @@ from .base import (
     counter_increases,
     finish_log_row,
     log_end_ns,
+    mark_full_fetch,
+    not_found,
     otlp_status,
     resolve_env_or_literal,
     rewrite_host_for_docker,
     strictly_older,
     strictly_older_traces,
+    trace_end_bound,
     trace_page,
     validate_label_name,
     validate_metric_name,
+    widened_fetch,
 )
 from .shapes import card_attrs, card_row, otlp_batch, otlp_event, otlp_span, to_int
 from .zipkin import coerce_tag
@@ -210,12 +214,9 @@ class ClickstackAdapter(BackendAdapter):
     # ── traces ────────────────────────────────────────────────────────
 
     def _span_predicates(self, f: StructuredFilter, start_s: int, end_s: int) -> List[str]:
-        end_ns = int(end_s) * 1_000_000_000
-        if f.before_ns:
-            end_ns = min(end_ns, int(f.before_ns))
         preds = [
             f"Timestamp >= fromUnixTimestamp64Nano({int(start_s) * 1_000_000_000})",
-            f"Timestamp < fromUnixTimestamp64Nano({end_ns})",
+            f"Timestamp < fromUnixTimestamp64Nano({trace_end_bound(f, end_s, 'ns')})",
             f"ServiceName = {sql_str(f.service or self.default_service)}",
         ]
         if f.roots_only:
@@ -243,7 +244,7 @@ class ClickstackAdapter(BackendAdapter):
         return preds
 
     def search(self, f: StructuredFilter, start_s: int, end_s: int, limit: int) -> Dict[str, Any]:
-        fetch = int(limit) + 1 if f.roots_only else (int(limit) + 1) * _ROWS_PER_TRACE
+        fetch = widened_fetch(limit, f.roots_only, _ROWS_PER_TRACE, inclusive=True)
         sql = (
             "SELECT TraceId, SpanId, SpanName, ServiceName, StatusCode, Duration, SpanAttributes, "
             "toUnixTimestamp64Nano(Timestamp) AS ts_ns "
@@ -288,9 +289,7 @@ class ClickstackAdapter(BackendAdapter):
                 )
             )
         page = trace_page(strictly_older_traces(traces, f), limit)
-        if not f.roots_only and len(rows) >= fetch:
-            page["has_more"] = True
-        return page
+        return mark_full_fetch(page, len(rows), fetch, widened=not f.roots_only)
 
     def trace_url(self, trace_id: str) -> Optional[str]:
         # HyperDX's search page takes a trace id in its query; only offered
@@ -311,7 +310,7 @@ class ClickstackAdapter(BackendAdapter):
         )
         rows = self._sql(sql)
         if not rows:
-            raise BackendError(404, f"Trace {trace_id} not found in ClickStack", "not_found")
+            raise not_found(trace_id, "ClickStack")
         # One batch per distinct resource (the whole attribute map, not just
         # the service): two processes of one service stay apart.
         by_resource: Dict[str, Tuple[Dict[str, Any], List[Dict[str, Any]]]] = {}

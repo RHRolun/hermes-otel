@@ -43,7 +43,10 @@ from .base import (
     finish_log_row,
     http_get_json,
     log_end_ns,
+    not_found,
+    root_of,
     severity_number_for,
+    span_matches,
     strictly_older,
     validate_label_name,
     validate_metric_name,
@@ -208,15 +211,9 @@ class GigapipeAdapter(TempoAdapter):
                 for sp in sc["spans"]
             ]
             all_spans.sort(key=lambda sp: int(sp.get("startTimeUnixNano") or 0))
-            ids = {sp.get("spanId") for sp in all_spans}
             if f.roots_only:
-                card = next(
-                    (
-                        sp
-                        for sp in all_spans
-                        if not sp.get("parentSpanId") or sp.get("parentSpanId") not in ids
-                    ),
-                    None,
+                card = root_of(
+                    all_spans, lambda sp: sp.get("spanId"), lambda sp: sp.get("parentSpanId")
                 )
             else:
                 # Widened (kind / tool filter): Gigapipe's one-span set names an
@@ -252,18 +249,12 @@ class GigapipeAdapter(TempoAdapter):
     @staticmethod
     def _span_matches(span: Dict[str, Any], f: StructuredFilter) -> bool:
         """The widened search's structured predicates, re-applied to a detail span."""
-        name = str(span.get("name") or "")
-        if f.name_prefix and not name.startswith(f.name_prefix):
-            return False
-        if f.name_regex and name != f.name_regex:
-            return False
-        attrs = otlp_attrs_to_dict(span.get("attributes"))
-        for k, v in f.attr_equals.items():
-            if str(attrs.get(k, "")).lower() != str(v).lower():
-                return False
-        if f.status == "error" and (span.get("status") or {}).get("code") != 2:
-            return False
-        return True
+        return span_matches(
+            f,
+            name=str(span.get("name") or ""),
+            attrs=otlp_attrs_to_dict(span.get("attributes")),
+            error=(span.get("status") or {}).get("code") == 2,
+        )
 
     def get_trace(self, trace_id: str) -> Dict[str, Any]:
         url = f"{self.query_url}/api/traces/{trace_id}"
@@ -271,12 +262,12 @@ class GigapipeAdapter(TempoAdapter):
             raw = http_get_json(url, timeout=20.0)
         except BackendError as exc:
             if exc.kind == "not_found":
-                raise BackendError(404, f"Trace {trace_id} not found in Gigapipe", "not_found")
+                raise not_found(trace_id, "Gigapipe")
             raise
         data = _dedupe_spans(normalize_trace(raw))
         n = span_count_of(data["batches"])
         if n == 0:
-            raise BackendError(404, f"Trace {trace_id} not found in Gigapipe", "not_found")
+            raise not_found(trace_id, "Gigapipe")
         data["span_count"] = n
         data["truncated"] = False
         return data

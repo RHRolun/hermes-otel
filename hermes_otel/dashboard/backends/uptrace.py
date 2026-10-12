@@ -51,14 +51,24 @@ from .base import (
     finish_log_row,
     http_get_json,
     log_end_ns,
+    not_found,
     otlp_status,
     resolve_env_or_literal,
     rewrite_host_for_docker,
     strictly_older,
     strictly_older_traces,
+    trace_end_bound,
     trace_page,
+    widened_fetch,
 )
-from .shapes import CARD_ATTRIBUTE_KEYS, card_row, group_by_service, otlp_batches, otlp_span
+from .shapes import (
+    CARD_ATTRIBUTE_KEYS,
+    card_row,
+    group_by_service,
+    otlp_batches,
+    otlp_span,
+    span_count_of,
+)
 
 # Entries that switch the service pin on log queries off.
 _NO_PIN = ("", "off", "none", "any", "*")
@@ -399,16 +409,15 @@ class UptraceAdapter(BackendAdapter):
         # trace contributes several rows (three ``tool.terminal`` spans of one
         # turn filled a two-row page and hid the other turn, #298): ask for
         # more, dedupe, and when the fetch came back full say so.
-        rows_wanted = int(limit) + 1 if server_roots else int(limit) * 4 + 1
+        rows_wanted = widened_fetch(limit, server_roots)
         params: List[Tuple[str, Any]] = [
             *self._systems(d["span_systems"]),
             ("query", self._build_uql(f, root_filter)),
             *d["sort"],
             ("limit", rows_wanted),
         ]
-        end_ms = None
-        if f.before_ns:
-            end_ms = int(f.before_ns) // 1_000_000 + 1
+        # Uptrace bounds time in ms: the cursor rounds up so its row stays inside.
+        end_ms = trace_end_bound(f, end_s, "ms", round_up=True) if f.before_ns else None
         data = self._get(self._path("spans"), start_s, end_s, params, end_ms=end_ms)
         rows = (data.get("spans") if isinstance(data, dict) else None) or []
         traces: Dict[str, Dict[str, Any]] = {}
@@ -450,9 +459,9 @@ class UptraceAdapter(BackendAdapter):
         url = self._api_url(self._path("trace", trace_id=trace_id), [])
         data = http_get_json(url, headers=self._headers(), timeout=20.0)
         out = _trace_to_otlp(data)
-        n = sum(len(scope["spans"]) for b in out["batches"] for scope in b["scopeSpans"])
+        n = span_count_of(out["batches"])
         if n == 0:
-            raise BackendError(404, f"Trace {trace_id} not found in Uptrace", "not_found")
+            raise not_found(trace_id, "Uptrace")
         out["span_count"] = n
         out["truncated"] = False
         return out

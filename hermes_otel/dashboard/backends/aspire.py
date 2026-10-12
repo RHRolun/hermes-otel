@@ -39,8 +39,11 @@ from .base import (
     finish_log_row,
     http_get_json,
     log_end_ns,
+    not_found,
     resolve_env_or_literal,
     rewrite_host_for_docker,
+    root_of,
+    span_matches,
     strictly_older,
     strictly_older_traces,
     trace_page,
@@ -191,30 +194,15 @@ class AspireAdapter(BackendAdapter):
         return 0
 
     def _matches(self, span: Dict[str, Any], attrs: Dict[str, Any], f: StructuredFilter) -> bool:
-        name = str(span.get("name") or "")
-        if f.name_prefix and not name.startswith(f.name_prefix):
-            return False
-        if f.name_regex and name != f.name_regex:
-            return False
-        for k, v in f.attr_equals.items():
-            have = attrs.get(k)
-            if have is None or str(have).lower() != str(v).lower():
-                return False
-        if f.min_duration_ms:
-            dur_ns = to_int(span.get("endTimeUnixNano")) - to_int(span.get("startTimeUnixNano"))
-            if dur_ns < int(f.min_duration_ms) * 1_000_000:
-                return False
-        code = self._status_code(span)
-        if f.status == "error" and code != 2:
-            return False
-        if f.status == "ok" and code == 2:
-            return False
-        if f.free_text:
-            needle = f.free_text.lower()
-            hay = f"{attrs.get('input.value', '')}\n{attrs.get('output.value', '')}".lower()
-            if needle not in hay:
-                return False
-        return True
+        """The API has no filters: every structured predicate is checked here."""
+        return span_matches(
+            f,
+            name=str(span.get("name") or ""),
+            attrs=attrs,
+            duration_ns=to_int(span.get("endTimeUnixNano")) - to_int(span.get("startTimeUnixNano")),
+            error=self._status_code(span) == 2,
+            text=f"{attrs.get('input.value', '')}\n{attrs.get('output.value', '')}",
+        )
 
     def search(self, f: StructuredFilter, start_s: int, end_s: int, limit: int) -> Dict[str, Any]:
         resources = self._resource_params(f.service or self.default_service)
@@ -228,16 +216,8 @@ class AspireAdapter(BackendAdapter):
         start_ns, end_ns = int(start_s) * 1_000_000_000, int(end_s) * 1_000_000_000
         rows: List[Dict[str, Any]] = []
         for tid, tspans in by_trace.items():
-            ids = {sp.get("spanId") for sp in tspans}
             tspans.sort(key=lambda sp: to_int(sp.get("startTimeUnixNano")))
-            root = next(
-                (
-                    sp
-                    for sp in tspans
-                    if not sp.get("parentSpanId") or sp.get("parentSpanId") not in ids
-                ),
-                tspans[0],
-            )
+            root = root_of(tspans, lambda sp: sp.get("spanId"), lambda sp: sp.get("parentSpanId"))
             if f.roots_only:
                 if root.get("parentSpanId"):
                     continue  # an orphan: its real root is outside the fetch
@@ -284,13 +264,13 @@ class AspireAdapter(BackendAdapter):
             data = self._get(f"/api/telemetry/traces/{_urlparse.quote(trace_id)}", [])
         except BackendError as exc:
             if exc.kind == "not_found":
-                raise BackendError(404, f"Trace {trace_id} not found in Aspire", "not_found")
+                raise not_found(trace_id, "Aspire")
             raise
         payload = data.get("data") if isinstance(data, dict) else None
         batches = [b for b in ((payload or {}).get("resourceSpans") or []) if isinstance(b, dict)]
         n = span_count_of(batches)
         if n == 0:
-            raise BackendError(404, f"Trace {trace_id} not found in Aspire", "not_found")
+            raise not_found(trace_id, "Aspire")
         return {"batches": batches, "span_count": n, "truncated": False}
 
     # ── logs ──────────────────────────────────────────────────────────
