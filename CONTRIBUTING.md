@@ -198,6 +198,20 @@ The contract test (`test_dashboard_adapter_contract.py`) parametrizes its
 invariants over `backends.adapters()`, so a new adapter is covered by it the
 moment it registers; its own response parsing goes in `test_dashboard_<type>.py`.
 
+### Golden fixtures
+
+`tests/golden/hooks/<scenario>__<config>.json` records the complete telemetry
+(spans, metric points, events) of twelve fixed hook sequences under four
+configs (`full`, `preview`, `off`, `events`). `tests/unit/test_golden_hooks.py`
+re-runs every one and fails on any difference, with a unified diff naming the
+attribute. Ids, timestamps, durations and the process identity are normalised
+(`T1`/`S1`, `<num>`, `<service.instance.id>`); everything else is literal.
+
+- Record or refresh: `UPDATE_GOLDEN=1 uv run --extra dev pytest tests/unit/test_golden_hooks.py`.
+- Add a scenario in `tests/golden/record_hooks.py` (`SCENARIOS`), record, commit the files.
+- **A refactor PR may not change a golden file.** If a change is deliberate (a bug
+  found on the way), re-record and list every changed line in the PR description.
+
 ## Adding a new backend
 
 1. Add the resolver in `tracer.py` (for now; this will move to
