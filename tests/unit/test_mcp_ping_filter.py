@@ -172,7 +172,7 @@ class TestInitWiring:
         )
         # The global-provider install is patched out so the test never mutates
         # process-wide OTel state; the plugin keeps its own provider object.
-        with patch("hermes_otel.tracer.trace.set_tracer_provider"):
+        with patch("hermes_otel.pipeline.trace.set_tracer_provider"):
             assert plugin.init() is True
         provider = plugin._tracer_provider
         assert provider is not None

@@ -74,7 +74,7 @@ def real_init_plugin(tmp_path_factory):
 
     # Stub the metric exporter so init doesn't spin up a background reader
     # that floods the test logs with retry messages aimed at fake-collector.
-    with patch("hermes_otel.tracer.OTLPMetricExporter") as mock_metrics:
+    with patch("hermes_otel.pipeline.OTLPMetricExporter") as mock_metrics:
         mock_metrics.return_value.export.return_value = None
         assert plugin.init() is True
 

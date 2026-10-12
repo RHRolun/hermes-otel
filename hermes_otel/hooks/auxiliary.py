@@ -12,8 +12,9 @@ as the kanban dispatcher or a gateway's idle work).
 Each attempt is an ``api.{model}`` span tagged ``hermes.query_source=auxiliary``
 and ``hermes.auxiliary.task=<aux_task>``, nested under whatever the owning turn
 has in flight (or its own root when there is no turn), with the same token,
-cost and duration attributes as a main-loop API call. Usage is accounted on
-the turn separately from the main-loop totals (see ``PerSession.add_auxiliary``).
+cost and duration attributes as a main-loop API call (``api_call.py`` builds
+them for both). Usage is accounted on the turn separately from the main-loop
+totals (see ``PerSession.add_auxiliary``).
 """
 
 from __future__ import annotations
@@ -30,32 +31,35 @@ from ..helpers import (
     truncate_string,
 )
 from ._common import _emit_event, _fail_open, as_dict, get_tracer
+from .api_call import (
+    HookPayload,
+    add_exception_event,
+    apply_usage,
+    duration_seconds,
+    ensure_span,
+    record_operation_duration,
+    request_attributes,
+    response_attributes,
+    token_suffix,
+)
 from .attributes import (
     _gen_ai_attributes,
-    _gen_ai_request_param_attributes,
     _metric_model_labels,
     _model_attributes,
     _provider_attributes,
     _response_model_attributes,
-    _session_context_attributes,
-    _session_identity_attributes,
 )
-from .llm import _request_body, _system_prompt
-from .usage import (
-    _estimate_cost,
-    _record_genai_token_usage,
-    _record_prompt_cache_metrics,
-    _record_usage_metrics,
-    genai_metric_dims,
-    normalize_usage,
-    usage_attributes,
-)
+from .usage import genai_metric_dims
 
 
 def _owning_session(session_id: Any) -> Optional[str]:
     """The main turn's session id, or None for a turn-less auxiliary call."""
     text = str(session_id or "").strip()
     return text or None
+
+
+def _span_name(model: Any) -> str:
+    return f"api.{model}" if model else "api.auxiliary"
 
 
 @_fail_open
@@ -86,46 +90,29 @@ def on_pre_auxiliary_call(
     owner = _owning_session(session_id)
     key = auxiliary_span_key(api_request_id, task, started_at)
 
-    attributes: Dict[str, Any] = {
-        "hermes.query_source": QUERY_SOURCE_AUXILIARY,
-        "hermes.auxiliary.task": task,
-        "llm.request.message_count": message_count,
-        "llm.request.approx_input_tokens": approx_input_tokens,
-    }
+    attributes = request_attributes(
+        tracer,
+        HookPayload(kwargs),
+        session_id=owner,
+        model=model,
+        provider=provider,
+        message_count=message_count,
+        approx_input_tokens=approx_input_tokens,
+        max_tokens=max_tokens,
+    )
+    attributes["hermes.query_source"] = QUERY_SOURCE_AUXILIARY
+    attributes["hermes.auxiliary.task"] = task
     if api_mode:
         attributes["llm.api_mode"] = truncate_string(api_mode, 80)
     if tool_count:
         attributes["llm.request.tool_count"] = tool_count
     if streaming:
         attributes["gen_ai.request.stream"] = True
-    attributes.update(_session_identity_attributes(owner))
-    attributes.update(_model_attributes(model, provider))
-    attributes.update(_gen_ai_attributes(owner, "chat"))
-    attributes.update(_gen_ai_request_param_attributes(kwargs))
-    attributes.update(_session_context_attributes(tracer, owner, kwargs))
-    if max_tokens:
-        attributes["llm.request.max_tokens"] = max_tokens
-        attributes["gen_ai.request.max_tokens"] = max_tokens
-
-    if tracer.config.capture_previews and tracer.config.capture_full_prompts:
-        messages = kwargs.get("request_messages") or kwargs.get("messages")
-        body = _request_body(kwargs)
-        if not messages:
-            messages = body.get("messages")
-        serialized = serialize_full(messages)
-        if serialized is not None:
-            attributes["gen_ai.input.messages"] = serialized
-            attributes["input.value"] = serialized
-            attributes["input.mime_type"] = "application/json"
-            attributes["hermes.content.input_chars"] = len(serialized)
-        system_prompt = _system_prompt(kwargs, messages, body)
-        if system_prompt:
-            attributes["gen_ai.system_instructions"] = system_prompt
 
     # Not pushed as a parent: nothing runs *inside* an auxiliary attempt. The
     # MoA aggregator's tool calls belong to the main loop's api span.
     tracer.start_span(
-        name=f"api.{model}" if model else "api.auxiliary",
+        name=_span_name(model),
         key=key,
         kind="llm",
         attributes=attributes,
@@ -179,61 +166,37 @@ def on_post_auxiliary_call(
         attributes["error.type"] = err_type
 
     model_labels = {**_metric_model_labels(model, provider), "query_source": QUERY_SOURCE_AUXILIARY}
-
-    totals = None
-    cost = None
-    usage = as_dict(usage)
-    if usage:
-        totals = normalize_usage(usage)
-        attributes.update(usage_attributes(totals))
-        _record_usage_metrics(tracer, totals, model_labels)
-        _record_prompt_cache_metrics(
-            tracer,
-            totals,
-            usage.get("available_fields"),
-            {**_metric_model_labels(model, provider), "api_mode": api_mode},
-        )
-        _record_genai_token_usage(
-            tracer,
-            "gen_ai.client.token.usage",
-            totals,
-            genai_metric_dims(model, provider, response_model),
-        )
-        cost = _estimate_cost(model, provider, base_url, usage)
-        if cost is not None:
-            attributes["hermes.cost.status"] = cost["status"]
-            if cost["source"]:
-                attributes["hermes.cost.source"] = cost["source"]
-            if cost["usd"] is not None:
-                attributes["hermes.cost.usage"] = cost["usd"]
-                tracer.record_metric(
-                    "cost_usage", cost["usd"], {**model_labels, "cost_status": cost["status"]}
-                )
-        tracer.record_metric("model_usage", 1, model_labels)
-
+    totals, cost = apply_usage(
+        tracer,
+        as_dict(usage),
+        attributes,
+        model=model,
+        provider=provider,
+        base_url=base_url,
+        response_model=response_model,
+        model_labels=model_labels,
+        cache_labels={**_metric_model_labels(model, provider), "api_mode": api_mode},
+    )
     if owner:
         tracer.sessions.get_or_create(owner).add_auxiliary(totals, cost, failed=failed)
 
-    duration = None
-    try:
-        duration = float(api_duration) if api_duration else None
-    except (TypeError, ValueError):
-        duration = None
-    if duration:
-        attributes["llm.response.duration_ms"] = round(duration * 1000, 1)
-        dims = genai_metric_dims(model, provider, response_model)
-        if err_type:
-            dims["error.type"] = err_type
-        tracer.record_metric("gen_ai.client.operation.duration", duration, dims)
-    if finish_reason:
-        attributes["llm.response.finish_reason"] = finish_reason
-        attributes["gen_ai.response.finish_reasons"] = [finish_reason]
+    duration = duration_seconds(api_duration)
+    attributes.update(
+        response_attributes(
+            api_duration=duration,
+            finish_reason=finish_reason,
+            assistant_content_chars=assistant_content_chars,
+            assistant_tool_call_count=assistant_tool_call_count,
+        )
+    )
+    record_operation_duration(
+        tracer,
+        duration,
+        genai_metric_dims(model, provider, response_model),
+        error_type=err_type or None,
+    )
     if streaming:
         attributes["gen_ai.request.stream"] = True
-    if assistant_content_chars:
-        attributes["llm.response.output_chars"] = assistant_content_chars
-    if assistant_tool_call_count:
-        attributes["llm.response.tool_calls"] = assistant_tool_call_count
 
     if tracer.config.capture_previews and tracer.config.capture_full_responses:
         response = as_dict(kwargs.get("response"))
@@ -257,42 +220,20 @@ def on_post_auxiliary_call(
         },
     )
 
-    span = tracer.spans.get_span(key)
-    if span is not None and failed and hasattr(span, "add_event"):
-        try:
-            span.add_event(
-                "exception",
-                {
-                    "exception.type": err_type or "error",
-                    "exception.message": err_message or "",
-                    "exception.escaped": True,
-                },
-            )
-        except Exception:  # pragma: no cover — never let telemetry raise
-            pass
+    # The in-flight span, or (post without pre: the pre fired before the plugin
+    # loaded, or the attempt outlived the orphan sweep) a fresh one so the
+    # spend is still visible with the identity the pre hook would have set.
+    span, created = ensure_span(
+        tracer, key, name=_span_name(model), session_id=owner, model=model, provider=provider
+    )
+    if not created and failed:
+        add_exception_event(span, err_type or "error", err_message, keep_empty_message=True)
 
-    if span is None:
-        # post without pre (pre fired before the plugin loaded, or the attempt
-        # outlived the orphan sweep): open and close a span so the spend is
-        # still visible, with the identity the pre hook would have set.
-        identity: Dict[str, Any] = {}
-        identity.update(_session_identity_attributes(owner))
-        identity.update(_model_attributes(model, provider))
-        tracer.start_span(
-            name=f"api.{model}" if model else "api.auxiliary",
-            key=key,
-            kind="llm",
-            attributes=identity,
-            session_id=owner,
-        )
-
-    in_tok = attributes.get("gen_ai.usage.input_tokens")
-    out_tok = attributes.get("gen_ai.usage.output_tokens")
-    tokens = f" ({in_tok}/{out_tok} tokens)" if in_tok is not None or out_tok is not None else ""
     _emit_event(
         tracer,
         EV.AUXILIARY_CALL,
-        f"auxiliary {task} {model}{tokens}" + (f": {err_type}" if err_type else ""),
+        f"auxiliary {task} {model}{token_suffix(attributes)}"
+        + (f": {err_type}" if err_type else ""),
         {**attributes, **_model_attributes(model, provider)},
         severity="ERROR" if failed else "INFO",
         session_id=owner,

@@ -241,7 +241,7 @@ def on_session_end(
             )
 
     root_span = tracer.spans.get_span(key)
-    started_at = tracer._turn_started_at.get(session_id) if session_id else None
+    started_at = tracer.spans.turn_started_at(session_id)
     final = attributes.get("hermes.turn.final_status") or "incomplete"
     _emit_event(
         tracer,

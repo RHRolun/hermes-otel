@@ -6,6 +6,7 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CODE = sorted((REPO_ROOT / "hermes_otel" / "hooks").glob("*.py")) + [
     REPO_ROOT / "hermes_otel" / "tracer.py",
+    REPO_ROOT / "hermes_otel" / "pipeline.py",
     # Per-session roll-ups the root span carries (cost, auxiliary calls).
     REPO_ROOT / "hermes_otel" / "session_state.py",
 ]

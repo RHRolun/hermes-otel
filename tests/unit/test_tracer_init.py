@@ -50,7 +50,7 @@ class TestInitPhoenix:
         # the plugin enabled (the dashboard's Live mode). Patch the global
         # provider set so we don't mutate process-wide OTel state.
         plugin = HermesOTelPlugin(config=HermesOtelConfig(dashboard_live=True))
-        with patch("hermes_otel.tracer.trace.set_tracer_provider"):
+        with patch("hermes_otel.pipeline.trace.set_tracer_provider"):
             try:
                 assert plugin.init() is True
                 assert plugin.is_enabled is True
@@ -239,7 +239,7 @@ class TestInitJaeger:
         plugin = HermesOTelPlugin()
         # Let the real _init_otlp run so _init_metrics is called with backend_name="Jaeger".
         real_tp = TracerProvider
-        with patch("hermes_otel.tracer.TracerProvider", side_effect=lambda **k: real_tp(**k)):
+        with patch("hermes_otel.pipeline.TracerProvider", side_effect=lambda **k: real_tp(**k)):
             plugin.init()
         # No meter provider should have been created for a traces-only backend.
         assert plugin._meter is None
@@ -285,7 +285,7 @@ class TestInitTempo:
 
         plugin = HermesOTelPlugin()
         real_tp = TracerProvider
-        with patch("hermes_otel.tracer.TracerProvider", side_effect=lambda **k: real_tp(**k)):
+        with patch("hermes_otel.pipeline.TracerProvider", side_effect=lambda **k: real_tp(**k)):
             plugin.init()
         assert plugin._meter is None
         assert plugin._meter_provider is None
@@ -333,8 +333,8 @@ class TestInitWeave:
             return real_tp(**kwargs)
 
         with (
-            patch("hermes_otel.tracer.TracerProvider", side_effect=_spy),
-            patch("hermes_otel.tracer.trace.set_tracer_provider"),
+            patch("hermes_otel.pipeline.TracerProvider", side_effect=_spy),
+            patch("hermes_otel.pipeline.trace.set_tracer_provider"),
         ):
             assert plugin.init() is True
 
@@ -430,7 +430,7 @@ class TestResourceAttributes:
             captured["resource"] = kwargs["resource"]
             return real_tp(**kwargs)
 
-        with patch("hermes_otel.tracer.TracerProvider", side_effect=_spy):
+        with patch("hermes_otel.pipeline.TracerProvider", side_effect=_spy):
             plugin.init()
 
         attrs = dict(captured["resource"].attributes)
@@ -460,7 +460,7 @@ class TestResourceAttributes:
             captured["resource"] = kwargs["resource"]
             return real_tp(**kwargs)
 
-        with patch("hermes_otel.tracer.TracerProvider", side_effect=_spy):
+        with patch("hermes_otel.pipeline.TracerProvider", side_effect=_spy):
             plugin.init()
         assert dict(captured["resource"].attributes)["env"] == "prod"
 
@@ -481,7 +481,7 @@ class TestResourceAttributes:
             captured["resource"] = kwargs["resource"]
             return real_tp(**kwargs)
 
-        with patch("hermes_otel.tracer.TracerProvider", side_effect=_spy):
+        with patch("hermes_otel.pipeline.TracerProvider", side_effect=_spy):
             plugin.init()
         assert dict(captured["resource"].attributes)["service.name"] == "custom-svc"
 
@@ -502,7 +502,7 @@ class TestResourceAttributes:
             captured["resource"] = kwargs["resource"]
             return real_tp(**kwargs)
 
-        with patch("hermes_otel.tracer.TracerProvider", side_effect=_spy):
+        with patch("hermes_otel.pipeline.TracerProvider", side_effect=_spy):
             plugin.init()
         assert dict(captured["resource"].attributes)["openinference.project.name"] == "env-project"
 
@@ -524,7 +524,7 @@ class TestResourceAttributes:
             captured["resource"] = kwargs["resource"]
             return real_tp(**kwargs)
 
-        with patch("hermes_otel.tracer.TracerProvider", side_effect=_spy):
+        with patch("hermes_otel.pipeline.TracerProvider", side_effect=_spy):
             plugin.init()
         assert dict(captured["resource"].attributes)["openinference.project.name"] == "cfg-wins"
 
@@ -546,7 +546,7 @@ class TestSampling:
             captured["kwargs"] = kwargs
             return real_tp(**kwargs)
 
-        with patch("hermes_otel.tracer.TracerProvider", side_effect=_spy):
+        with patch("hermes_otel.pipeline.TracerProvider", side_effect=_spy):
             plugin.init()
         assert "sampler" not in captured["kwargs"]
 
@@ -567,7 +567,7 @@ class TestSampling:
             captured["kwargs"] = kwargs
             return real_tp(**kwargs)
 
-        with patch("hermes_otel.tracer.TracerProvider", side_effect=_spy):
+        with patch("hermes_otel.pipeline.TracerProvider", side_effect=_spy):
             plugin.init()
         sampler = captured["kwargs"].get("sampler")
         assert isinstance(sampler, ParentBased)
