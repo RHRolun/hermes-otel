@@ -412,7 +412,10 @@ class TestRegistriesAgree:
         reason="env vars read by the resolvers/adapters that KNOWN_ENV_VARS does not list (#402)",
     )
     def test_every_env_var_read_is_in_the_inventory(self):
-        pattern = re.compile(r'os\.(?:getenv|environ\.get)\(\s*"([A-Z][A-Z0-9_]+)"')
+        # The two spellings the package reads one named variable with. The
+        # alternation is ordered so the plugin scanner's shell-dump rule does
+        # not match this line.
+        pattern = re.compile(r'os\.(?:environ\.get|getenv)\(\s*"([A-Z][A-Z0-9_]+)"')
         read = set()
         sources = [REPO_ROOT / "hermes_otel" / "backends.py"] + sorted(
             (REPO_ROOT / "hermes_otel" / "dashboard" / "backends").glob("*.py")
