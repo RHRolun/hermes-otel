@@ -4,7 +4,7 @@
   "supports_logs": true,
   "supports_metrics": true
  },
- "display_name": "Qryn",
+ "display_name": "Gigapipe",
  "entry": {
   "endpoint": "http://localhost:4318/v1/traces",
   "logs": {
@@ -18,7 +18,18 @@
   "type": "qryn",
   "user": "<secret>"
  },
- "error": "ValueError: unknown backend type 'qryn'",
+ "log_targets": {
+  "count": 1,
+  "exporters": [
+   {
+    "endpoint": "http://localhost:4318/v1/logs",
+    "headers": {
+     "Authorization": "Basic <secret>",
+     "x-global": "g"
+    }
+   }
+  ]
+ },
  "mcp": {
   "backend_type": "qryn",
   "name": "qryn-entry",
@@ -26,6 +37,30 @@
  },
  "path": "logs_block",
  "preset_temporality": null,
+ "resolved": {
+  "display_name": "qryn-entry",
+  "endpoint": "http://localhost:4318/v1/traces",
+  "headers": {
+   "Authorization": "Basic <secret>"
+  },
+  "log_overrides": {
+   "exclude_loggers": [
+    "noisy"
+   ],
+   "level": "ERROR"
+  },
+  "logs_endpoint": null,
+  "logs_headers": null,
+  "metrics_endpoint": null,
+  "metrics_headers": null,
+  "metrics_temporality": null,
+  "resource_attributes": null,
+  "root_usage": true,
+  "supports_logs": true,
+  "supports_metrics": true,
+  "supports_traces": true,
+  "type": "gigapipe"
+ },
  "settings_card": {
   "credentials": [
    {
@@ -41,13 +76,13 @@
     "value": "••••••"
    }
   ],
-  "display_type": "Qryn",
-  "docs_path": null,
+  "display_type": "Gigapipe",
+  "docs_path": "/backends/gigapipe",
   "fields": {
    "endpoint": "http://localhost:4318/v1/traces"
   },
   "headers": null,
-  "known_type": false,
+  "known_type": true,
   "log_overrides": {
    "exclude_loggers": [
     "noisy"
@@ -64,7 +99,7 @@
    "logs": {
     "configured": "on",
     "exported": true,
-    "supported": false
+    "supported": true
    },
    "metrics": {
     "configured": "auto",
@@ -85,7 +120,7 @@
   }
  },
  "signal_support": {
-  "logs": false,
+  "logs": true,
   "metrics": true,
   "traces": true
  },

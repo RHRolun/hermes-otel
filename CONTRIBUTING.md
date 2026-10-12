@@ -263,6 +263,20 @@ are public in their home module (`hooks.usage.normalize_usage`,
 kept for one release. `hooks/__init__.py` exports only the `on_*` callbacks,
 `get_tracer` and `get_current_traceparent`.
 
+### The telemetry vocabulary (`hermes_otel/semconv.py`)
+
+Every attribute name the plugin emits, the fallback chains readers use
+(`SESSION_KEYS`, `MODEL_KEYS`, `TOTAL_TOKEN_KEYS`, ...), the span-kind table
+and the event names live in `hermes_otel/semconv.py` (#404). The live store,
+the query CLI, the OpenObserve column table and `dashboard-ui/src/lib.ts`
+read it; `scripts/gen_semconv.py` writes `dashboard-ui/src/semconv.generated.ts`
+and `--check` (run by `make ci-semconv` and CI) fails when that file is stale
+or when `website/docs/reference/span-attributes.md` lists more or fewer
+attributes than the registry. To add an attribute: emit it in a hook, add its
+`Attr` to the registry, document it on the reference page, run the generator,
+rebuild the dashboard bundle. `tests/unit/test_semconv.py` fails on a hook
+literal the registry does not know.
+
 ## Live before/after check (`make refactor-check`)
 
 Golden fixtures prove the Python output is unchanged; `make refactor-check`

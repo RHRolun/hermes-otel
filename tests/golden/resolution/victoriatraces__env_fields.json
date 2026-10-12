@@ -4,7 +4,7 @@
   "supports_logs": true,
   "supports_metrics": true
  },
- "display_name": "Victoriatraces",
+ "display_name": "Victoria",
  "entry": {
   "endpoint": "http://localhost:4318/v1/traces",
   "logs_endpoint": "http://localhost:9428",
@@ -14,7 +14,19 @@
   "type": "victoriatraces",
   "user_env": "HO_TEST_USER"
  },
- "error": "ValueError: unknown backend type 'victoriatraces'",
+ "log_targets": {
+  "count": 1,
+  "exporters": [
+   {
+    "endpoint": "http://localhost:9428/insert/opentelemetry/v1/logs",
+    "headers": {
+     "Authorization": "Basic <secret>",
+     "VL-Stream-Fields": "service.name",
+     "x-global": "g"
+    }
+   }
+  ]
+ },
  "mcp": {
   "backend_type": "victoriatraces",
   "name": "victoriatraces-entry",
@@ -22,6 +34,30 @@
  },
  "path": "env_fields",
  "preset_temporality": null,
+ "resolved": {
+  "display_name": "victoriatraces-entry",
+  "endpoint": "http://localhost:4318/insert/opentelemetry/v1/traces",
+  "headers": {
+   "Authorization": "Basic <secret>"
+  },
+  "log_overrides": null,
+  "logs_endpoint": "http://localhost:9428/insert/opentelemetry/v1/logs",
+  "logs_headers": {
+   "Authorization": "Basic <secret>",
+   "VL-Stream-Fields": "service.name"
+  },
+  "metrics_endpoint": "http://localhost:8428/opentelemetry/v1/metrics",
+  "metrics_headers": {
+   "Authorization": "Basic <secret>"
+  },
+  "metrics_temporality": null,
+  "resource_attributes": null,
+  "root_usage": true,
+  "supports_logs": true,
+  "supports_metrics": true,
+  "supports_traces": true,
+  "type": "victoria"
+ },
  "settings_card": {
   "credentials": [
    {
@@ -37,13 +73,13 @@
     "value": "••••••"
    }
   ],
-  "display_type": "Victoriatraces",
-  "docs_path": null,
+  "display_type": "Victoria",
+  "docs_path": "/backends/victoria",
   "fields": {
    "endpoint": "http://localhost:4318/v1/traces"
   },
   "headers": null,
-  "known_type": false,
+  "known_type": true,
   "log_overrides": null,
   "metrics_temporality": {
    "source": "SDK default",
@@ -54,8 +90,8 @@
   "signals": {
    "logs": {
     "configured": "auto",
-    "exported": false,
-    "supported": false
+    "exported": true,
+    "supported": true
    },
    "metrics": {
     "configured": "auto",
@@ -76,7 +112,7 @@
   }
  },
  "signal_support": {
-  "logs": false,
+  "logs": true,
   "metrics": true,
   "traces": true
  },

@@ -27,6 +27,7 @@ from dataclasses import dataclass, fields, replace
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
 
+from .backend_specs import SPECS as _SPECS
 from .debug_utils import logger
 
 Scalar = Union[str, int, float, bool]
@@ -194,6 +195,11 @@ class BackendConfig:
     # victoria: the metrics and logs stores (VictoriaMetrics, VictoriaLogs); traces go to `endpoint`
     metrics_endpoint: Optional[str] = None
     logs_endpoint: Optional[str] = None
+    # Dashboard-only keys the entry carried (``query_port``, ``prometheus_url``,
+    # ...: what the type's adapter reads, per the manifest), kept so the
+    # loader never silently drops a query-side setting (#402). Pairs, so the
+    # frozen dataclass stays hashable.
+    extra: Tuple[Tuple[str, Any], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -466,7 +472,14 @@ def _load_yaml(path: Path) -> Dict[str, Any]:
 
 _ALLOWED_KEYS = {f.name for f in fields(HermesOtelConfig)}
 TOP_LEVEL_BLOCKS = ("logs",)  # yaml keys that are blocks, not fields
-_BACKEND_ALLOWED_KEYS = {f.name for f in fields(BackendConfig)}
+_BACKEND_ALLOWED_KEYS = {f.name for f in fields(BackendConfig)} - {"extra"}
+# Dashboard-only keys (what the adapters read, from the manifest) plus the
+# generic query-side spellings; anything else unknown is warned about once.
+_QUERY_KEYS = frozenset(
+    {"query_port", "ui_url", "query_api", "query_path", "prometheus_url", "loki_url"}
+    | {k for s in _SPECS for k in s.query_keys}
+)
+_UNKNOWN_KEY_WARNED: set = set()
 
 
 # ``${VAR_NAME}`` references inside config.yaml string values (headers, api
@@ -518,6 +531,7 @@ def coerce_backends(value: Any) -> Optional[Tuple[BackendConfig, ...]]:
             logger.warning(f"[hermes-otel] config.yaml backends[{idx}] missing 'type'; skipping")
             continue
         kwargs: Dict[str, Any] = {}
+        extra: List[Tuple[str, Any]] = []
         for k, v in raw.items():
             if k == "trace":
                 # Friendly alias for users who naturally mirror the singular
@@ -526,6 +540,13 @@ def coerce_backends(value: Any) -> Optional[Tuple[BackendConfig, ...]]:
                     continue
                 k = "traces"
             if k not in _BACKEND_ALLOWED_KEYS:
+                if k in _QUERY_KEYS:
+                    extra.append((str(k), v))
+                elif k not in _UNKNOWN_KEY_WARNED:
+                    _UNKNOWN_KEY_WARNED.add(k)
+                    logger.warning(
+                        f"[hermes-otel] config.yaml backends[{idx}]: unknown key {k!r} ignored"
+                    )
                 continue
             if k == "headers":
                 if isinstance(v, dict):
@@ -557,7 +578,7 @@ def coerce_backends(value: Any) -> Optional[Tuple[BackendConfig, ...]]:
                 str(v) if not isinstance(v, str) else v, where=f"backends[{idx}].{k}"
             )
         try:
-            out.append(BackendConfig(**kwargs))
+            out.append(BackendConfig(**kwargs, extra=tuple(extra)))
         except TypeError as e:
             logger.warning(f"[hermes-otel] config.yaml backends[{idx}] invalid: {e}; skipping")
 

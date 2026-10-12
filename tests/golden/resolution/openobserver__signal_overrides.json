@@ -4,7 +4,7 @@
   "supports_logs": true,
   "supports_metrics": true
  },
- "display_name": "Openobserver",
+ "display_name": "OpenObserve",
  "entry": {
   "endpoint": "http://localhost:4318/v1/traces",
   "logs": true,
@@ -15,7 +15,19 @@
   "type": "openobserver",
   "user": "<secret>"
  },
- "error": "ValueError: unknown backend type 'openobserver'",
+ "log_targets": {
+  "count": 1,
+  "exporters": [
+   {
+    "endpoint": "http://localhost:4318/v1/logs",
+    "headers": {
+     "Authorization": "Basic <secret>",
+     "stream-name": "default",
+     "x-global": "g"
+    }
+   }
+  ]
+ },
  "mcp": {
   "backend_type": "openobserver",
   "name": "openobserver-entry",
@@ -23,6 +35,26 @@
  },
  "path": "signal_overrides",
  "preset_temporality": null,
+ "resolved": {
+  "display_name": "openobserver-entry",
+  "endpoint": "http://localhost:4318/v1/traces",
+  "headers": {
+   "Authorization": "Basic <secret>",
+   "stream-name": "default"
+  },
+  "log_overrides": null,
+  "logs_endpoint": null,
+  "logs_headers": null,
+  "metrics_endpoint": null,
+  "metrics_headers": null,
+  "metrics_temporality": null,
+  "resource_attributes": null,
+  "root_usage": true,
+  "supports_logs": true,
+  "supports_metrics": true,
+  "supports_traces": false,
+  "type": "openobserve"
+ },
  "settings_card": {
   "credentials": [
    {
@@ -38,13 +70,13 @@
     "value": "••••••"
    }
   ],
-  "display_type": "Openobserver",
-  "docs_path": null,
+  "display_type": "OpenObserve",
+  "docs_path": "/backends/openobserve",
   "fields": {
    "endpoint": "http://localhost:4318/v1/traces"
   },
   "headers": null,
-  "known_type": false,
+  "known_type": true,
   "log_overrides": null,
   "metrics_temporality": {
    "source": "SDK default",
@@ -56,7 +88,7 @@
    "logs": {
     "configured": "on",
     "exported": true,
-    "supported": false
+    "supported": true
    },
    "metrics": {
     "configured": "on",
@@ -77,7 +109,7 @@
   }
  },
  "signal_support": {
-  "logs": false,
+  "logs": true,
   "metrics": true,
   "traces": true
  },

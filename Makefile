@@ -41,11 +41,11 @@ refactor-check:
 # (the suite against the OpenTelemetry 1.35 floor, a fresh venv), and the
 # catalog-admission workflow (installs hermes-agent main; push to main,
 # weekly, or dispatch).
-.PHONY: ci ci-fast ci-lint ci-scan ci-test ci-floor ci-dashboard ci-docs ci-wheel
-ci: ci-lint ci-scan ci-test ci-dashboard ci-docs ci-wheel
+.PHONY: ci ci-fast ci-lint ci-scan ci-semconv ci-test ci-floor ci-dashboard ci-docs ci-wheel
+ci: ci-lint ci-scan ci-semconv ci-test ci-dashboard ci-docs ci-wheel
 	@echo "✓ ci: every check that GitHub Actions runs passed locally"
 
-ci-fast: ci-lint ci-scan ci-test
+ci-fast: ci-lint ci-scan ci-semconv ci-test
 	@echo "✓ ci-fast: lint, scan and tests passed (dashboard/docs/wheel skipped)"
 
 ci-lint:
@@ -55,6 +55,12 @@ ci-lint:
 
 ci-scan:
 	uv run --extra dev python scripts/scan_plugin_artifact.py
+
+# The telemetry vocabulary (hermes_otel/semconv.py) generates
+# dashboard-ui/src/semconv.generated.ts and is checked against the span
+# attribute reference page; a stale file or a drifted page fails here (#404).
+ci-semconv:
+	uv run python scripts/gen_semconv.py --check
 
 ci-test:
 	uv run --extra dev pytest --cov=hermes_otel --cov-branch --cov-report=term --cov-report=json --cov-fail-under=85 -q
