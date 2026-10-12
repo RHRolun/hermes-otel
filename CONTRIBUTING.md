@@ -191,6 +191,21 @@ The contract test (`test_dashboard_adapter_contract.py`) parametrizes its
 invariants over `backends.adapters()`, so a new adapter is covered by it the
 moment it registers; its own response parsing goes in `test_dashboard_<type>.py`.
 
+### Resolution snapshot (#409)
+
+`tests/unit/test_golden_resolution.py` records, for every backend type and
+every adapter alias under six input paths (inline credentials, `*_env`
+credentials, env-only selection, signal overrides, temporality + root_usage
+overrides, a per-backend `logs:` block), what the exporter resolves, which log
+exporter it gets, its Settings card, its MCP query target, its `status` line
+and its dashboard adapter, into `tests/golden/resolution/<type>__<path>.json`,
+plus the whole settings report for `config.yaml.example`. Secrets are
+placeholders and masked. `UPDATE_GOLDEN=1 pytest tests/unit/test_golden_resolution.py`
+re-records; a refactor PR that changes a fixture lists every changed line. The
+same module holds the cross-registry consistency checks (exporter types vs
+adapter `handles`, `signal_support()` vs adapter capabilities, env vars read vs
+`KNOWN_ENV_VARS`), marked `xfail(strict=True)` while #402 is open.
+
 ## Adding a new backend
 
 1. Add the resolver in `tracer.py` (for now; this will move to
