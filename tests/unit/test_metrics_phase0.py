@@ -24,14 +24,10 @@ from opentelemetry.sdk.metrics.export import (
 )
 from opentelemetry.sdk.metrics.view import ExponentialBucketHistogramAggregation
 
+from hermes_otel import pipeline as pipeline_mod
 from hermes_otel import tracer as tracer_mod
 from hermes_otel.backends import resolve
-from hermes_otel.plugin_config import (
-    BackendConfig,
-    normalize_temporality,
-    reconcile_metrics_settings,
-)
-from hermes_otel.tracer import (
+from hermes_otel.instruments import (
     _B_OP_SECONDS,
     _B_TOKENS,
     _B_TOOL_MS,
@@ -39,6 +35,11 @@ from hermes_otel.tracer import (
     metric_preferred_aggregation,
     metric_temporality_map,
     metric_views,
+)
+from hermes_otel.plugin_config import (
+    BackendConfig,
+    normalize_temporality,
+    reconcile_metrics_settings,
 )
 
 
@@ -311,10 +312,10 @@ class TestTemporality:
             def shutdown(self, *a, **k):
                 return None
 
-        monkeypatch.setattr(tracer_mod, "OTLPMetricExporter", FakeMetricExporter)
-        monkeypatch.setattr(tracer_mod, "OTLPSpanExporter", FakeSpanExporter)
+        monkeypatch.setattr(pipeline_mod, "OTLPMetricExporter", FakeMetricExporter)
+        monkeypatch.setattr(pipeline_mod, "OTLPSpanExporter", FakeSpanExporter)
         monkeypatch.setattr(
-            tracer_mod,
+            pipeline_mod,
             "PeriodicExportingMetricReader",
             lambda exporter, **kw: InMemoryMetricReader(
                 preferred_temporality=exporter._preferred_temporality,

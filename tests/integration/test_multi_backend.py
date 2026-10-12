@@ -137,10 +137,10 @@ class TestConfigBackendsRouting:
         plugin = HermesOTelPlugin(config=cfg)
 
         with (
-            patch("hermes_otel.tracer.OTLPSpanExporter"),
-            patch("hermes_otel.tracer.OTLPMetricExporter"),
-            patch("hermes_otel.tracer.trace.set_tracer_provider"),
-            patch("hermes_otel.tracer.metrics.set_meter_provider"),
+            patch("hermes_otel.pipeline.OTLPSpanExporter"),
+            patch("hermes_otel.pipeline.OTLPMetricExporter"),
+            patch("hermes_otel.pipeline.trace.set_tracer_provider"),
+            patch("hermes_otel.pipeline.metrics.set_meter_provider"),
         ):
             assert plugin.init() is True
 
@@ -160,10 +160,10 @@ class TestConfigBackendsRouting:
         )
         plugin = HermesOTelPlugin(config=cfg)
         with (
-            patch("hermes_otel.tracer.OTLPSpanExporter"),
-            patch("hermes_otel.tracer.OTLPMetricExporter"),
-            patch("hermes_otel.tracer.trace.set_tracer_provider"),
-            patch("hermes_otel.tracer.metrics.set_meter_provider"),
+            patch("hermes_otel.pipeline.OTLPSpanExporter"),
+            patch("hermes_otel.pipeline.OTLPMetricExporter"),
+            patch("hermes_otel.pipeline.trace.set_tracer_provider"),
+            patch("hermes_otel.pipeline.metrics.set_meter_provider"),
         ):
             assert plugin.init() is True
         assert len(plugin._span_processors) == 3
@@ -178,10 +178,10 @@ class TestConfigBackendsRouting:
         )
         plugin = HermesOTelPlugin(config=cfg)
         with (
-            patch("hermes_otel.tracer.OTLPSpanExporter") as mock_exp,
-            patch("hermes_otel.tracer.OTLPMetricExporter"),
-            patch("hermes_otel.tracer.trace.set_tracer_provider"),
-            patch("hermes_otel.tracer.metrics.set_meter_provider"),
+            patch("hermes_otel.pipeline.OTLPSpanExporter") as mock_exp,
+            patch("hermes_otel.pipeline.OTLPMetricExporter"),
+            patch("hermes_otel.pipeline.trace.set_tracer_provider"),
+            patch("hermes_otel.pipeline.metrics.set_meter_provider"),
         ):
             assert plugin.init() is True
         # Exactly one trace exporter (jaeger) — env phoenix ignored.
@@ -212,10 +212,10 @@ class TestConfigBackendsRouting:
         )
         plugin = HermesOTelPlugin(config=cfg)
         with (
-            patch("hermes_otel.tracer.OTLPSpanExporter") as mock_span_exp,
-            patch("hermes_otel.tracer.OTLPMetricExporter"),
-            patch("hermes_otel.tracer.trace.set_tracer_provider"),
-            patch("hermes_otel.tracer.metrics.set_meter_provider"),
+            patch("hermes_otel.pipeline.OTLPSpanExporter") as mock_span_exp,
+            patch("hermes_otel.pipeline.OTLPMetricExporter"),
+            patch("hermes_otel.pipeline.trace.set_tracer_provider"),
+            patch("hermes_otel.pipeline.metrics.set_meter_provider"),
         ):
             assert plugin.init() is True
 
@@ -235,10 +235,10 @@ class TestConfigBackendsRouting:
         )
         plugin = HermesOTelPlugin(config=cfg)
         with (
-            patch("hermes_otel.tracer.OTLPSpanExporter"),
-            patch("hermes_otel.tracer.OTLPMetricExporter"),
-            patch("hermes_otel.tracer.trace.set_tracer_provider"),
-            patch("hermes_otel.tracer.metrics.set_meter_provider"),
+            patch("hermes_otel.pipeline.OTLPSpanExporter"),
+            patch("hermes_otel.pipeline.OTLPMetricExporter"),
+            patch("hermes_otel.pipeline.trace.set_tracer_provider"),
+            patch("hermes_otel.pipeline.metrics.set_meter_provider"),
         ):
             assert plugin.init() is True
         # Only jaeger survived.
@@ -281,10 +281,10 @@ class TestPartialBackendFailure:
             return MagicMock()
 
         with (
-            patch("hermes_otel.tracer.OTLPSpanExporter", side_effect=flaky_exporter),
-            patch("hermes_otel.tracer.OTLPMetricExporter"),
-            patch("hermes_otel.tracer.trace.set_tracer_provider"),
-            patch("hermes_otel.tracer.metrics.set_meter_provider"),
+            patch("hermes_otel.pipeline.OTLPSpanExporter", side_effect=flaky_exporter),
+            patch("hermes_otel.pipeline.OTLPMetricExporter"),
+            patch("hermes_otel.pipeline.trace.set_tracer_provider"),
+            patch("hermes_otel.pipeline.metrics.set_meter_provider"),
         ):
             assert plugin.init() is True
 
@@ -302,12 +302,12 @@ class TestPartialBackendFailure:
 
         with (
             patch(
-                "hermes_otel.tracer.OTLPSpanExporter",
+                "hermes_otel.pipeline.OTLPSpanExporter",
                 side_effect=ConnectionError("boom"),
             ),
-            patch("hermes_otel.tracer.OTLPMetricExporter"),
-            patch("hermes_otel.tracer.trace.set_tracer_provider"),
-            patch("hermes_otel.tracer.metrics.set_meter_provider"),
+            patch("hermes_otel.pipeline.OTLPMetricExporter"),
+            patch("hermes_otel.pipeline.trace.set_tracer_provider"),
+            patch("hermes_otel.pipeline.metrics.set_meter_provider"),
         ):
             assert plugin.init() is False
         assert plugin.is_enabled is False
@@ -323,8 +323,8 @@ class TestLangfuseBackendConfig:
         )
         plugin = HermesOTelPlugin(config=cfg)
         with (
-            patch("hermes_otel.tracer.OTLPSpanExporter") as mock_exp,
-            patch("hermes_otel.tracer.trace.set_tracer_provider"),
+            patch("hermes_otel.pipeline.OTLPSpanExporter") as mock_exp,
+            patch("hermes_otel.pipeline.trace.set_tracer_provider"),
         ):
             assert plugin.init() is True
         # Endpoint derived from base_url
@@ -354,10 +354,10 @@ class TestSecretResolution:
         )
         plugin = HermesOTelPlugin(config=cfg)
         with (
-            patch("hermes_otel.tracer.OTLPSpanExporter") as mock_exp,
-            patch("hermes_otel.tracer.OTLPMetricExporter"),
-            patch("hermes_otel.tracer.trace.set_tracer_provider"),
-            patch("hermes_otel.tracer.metrics.set_meter_provider"),
+            patch("hermes_otel.pipeline.OTLPSpanExporter") as mock_exp,
+            patch("hermes_otel.pipeline.OTLPMetricExporter"),
+            patch("hermes_otel.pipeline.trace.set_tracer_provider"),
+            patch("hermes_otel.pipeline.metrics.set_meter_provider"),
         ):
             assert plugin.init() is True
         headers = mock_exp.call_args_list[0].kwargs["headers"]
