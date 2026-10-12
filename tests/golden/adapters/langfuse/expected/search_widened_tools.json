@@ -17,7 +17,7 @@
   "traces": [
    {
     "durationMs": 1120,
-    "rootServiceName": "langfuse",
+    "rootServiceName": "hermes-agent",
     "rootTraceName": "tool.terminal",
     "spanSets": [
      {
@@ -61,7 +61,7 @@
    },
    {
     "durationMs": 1120,
-    "rootServiceName": "langfuse",
+    "rootServiceName": "hermes-agent",
     "rootTraceName": "tool.terminal",
     "spanSets": [
      {

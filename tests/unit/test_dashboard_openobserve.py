@@ -91,7 +91,9 @@ class TestOpenObserve:
             if "GROUP BY" in sql:
                 return {"hits": []}
             if "reference" in sql:
-                raise BackendError(502, "Backend returned 400: unknown field reference")
+                raise BackendError(
+                    502, "Backend returned 400: unknown field reference", http_status=400
+                )
             return {"hits": rows}
 
         monkeypatch.setattr(openobserve, "http_post_json", fake)

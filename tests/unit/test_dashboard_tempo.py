@@ -65,7 +65,9 @@ class TestTempo:
         def fake(url, headers=None, timeout=None):
             urls.append(url)
             if len(urls) == 1:
-                raise BackendError(502, "Backend returned 400: parse error at select")
+                raise BackendError(
+                    502, "Backend returned 400: parse error at select", http_status=400
+                )
             return {"traces": []}
 
         monkeypatch.setattr(tempo, "http_get_json", fake)
