@@ -105,19 +105,15 @@ _ENV_FIELDS = {f.name for f in dataclasses.fields(pc.BackendConfig) if f.name.en
 
 
 def _alias_types() -> Dict[str, str]:
-    """Every adapter alias (``hyperdx`` …) -> the canonical type it maps to."""
-    out: Dict[str, str] = {}
-    for cls in dash.adapters():
-        handled = sorted(cls.handles)
-        canonical = next((t for t in handled if t in backends.KNOWN_TYPES), handled[0])
-        for t in handled:
-            if t not in backends.KNOWN_TYPES:
-                out[t] = canonical
-    return out
+    """Every alias (``hyperdx`` …) -> the canonical type it maps to (the manifest, #402)."""
+    from hermes_otel.backend_specs import SPECS
+
+    return {alias: spec.type for spec in SPECS for alias in spec.aliases}
 
 
 def all_types() -> List[str]:
-    return sorted(backends.KNOWN_TYPES) + sorted(_alias_types())
+    aliases = _alias_types()
+    return sorted(t for t in backends.KNOWN_TYPES if t not in aliases) + sorted(aliases)
 
 
 def base_entry(backend_type: str) -> Tuple[Dict[str, Any], str]:
@@ -379,38 +375,37 @@ def test_config_example_report(scratch_home):
 
 
 class TestRegistriesAgree:
-    @pytest.mark.xfail(
-        strict=True,
-        reason="dashboard-only aliases (hyperdx, qryn, openobserver, victoriatraces) "
-        "have no resolver (#402)",
-    )
     def test_every_adapter_type_is_an_exporter_type(self):
+        """Every type or alias an adapter handles is in the manifest (#402)."""
         handled = {t for cls in dash.adapters() for t in cls.handles}
         assert handled - backends.KNOWN_TYPES == set()
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="adapter supports_* and signal_support() disagree for some types (#402)",
-    )
     def test_adapter_capabilities_match_signal_support(self):
+        """What the adapter can read equals what the exporter sends, unless the
+        manifest documents the exception (``adapter_signals``, #402)."""
         from helpers.dashboard import generic_adapter
+
+        from hermes_otel.backend_specs import spec_for
 
         mismatches = {}
         for cls in dash.adapters():
             inst = generic_adapter(cls)
             for t in sorted(cls.handles):
-                if t not in backends.KNOWN_TYPES:
-                    continue
-                want = backends.signal_support(t)
+                spec = spec_for(t)
+                assert spec is not None, t
+                if spec.adapter_signals is not None:
+                    want = {
+                        "metrics": spec.adapter_signals.metrics,
+                        "logs": spec.adapter_signals.logs,
+                    }
+                else:
+                    support = backends.signal_support(t)
+                    want = {"metrics": support["metrics"], "logs": support["logs"]}
                 got = {"metrics": bool(inst.supports_metrics), "logs": bool(inst.supports_logs)}
-                if (want["metrics"], want["logs"]) != (got["metrics"], got["logs"]):
-                    mismatches[t] = {"exporter": want, "adapter": got}
+                if want != got:
+                    mismatches[t] = {"expected": want, "adapter": got}
         assert mismatches == {}
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="env vars read by the resolvers/adapters that KNOWN_ENV_VARS does not list (#402)",
-    )
     def test_every_env_var_read_is_in_the_inventory(self):
         # The two spellings the package reads one named variable with. The
         # alternation is ordered so the plugin scanner's shell-dump rule does

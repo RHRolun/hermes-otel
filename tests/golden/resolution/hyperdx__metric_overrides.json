@@ -4,7 +4,7 @@
   "supports_logs": true,
   "supports_metrics": true
  },
- "display_name": "Hyperdx",
+ "display_name": "ClickStack",
  "entry": {
   "api_key": "<secret>",
   "endpoint": "http://localhost:4318/v1/traces",
@@ -13,7 +13,18 @@
   "root_usage": false,
   "type": "hyperdx"
  },
- "error": "ValueError: unknown backend type 'hyperdx'",
+ "log_targets": {
+  "count": 1,
+  "exporters": [
+   {
+    "endpoint": "http://localhost:4318/v1/logs",
+    "headers": {
+     "authorization": "<secret>",
+     "x-global": "g"
+    }
+   }
+  ]
+ },
  "mcp": {
   "backend_type": "hyperdx",
   "name": "hyperdx-entry",
@@ -21,6 +32,25 @@
  },
  "path": "metric_overrides",
  "preset_temporality": null,
+ "resolved": {
+  "display_name": "hyperdx-entry",
+  "endpoint": "http://localhost:4318/v1/traces",
+  "headers": {
+   "authorization": "<secret>"
+  },
+  "log_overrides": null,
+  "logs_endpoint": null,
+  "logs_headers": null,
+  "metrics_endpoint": null,
+  "metrics_headers": null,
+  "metrics_temporality": "delta",
+  "resource_attributes": null,
+  "root_usage": false,
+  "supports_logs": true,
+  "supports_metrics": true,
+  "supports_traces": true,
+  "type": "clickstack"
+ },
  "settings_card": {
   "credentials": [
    {
@@ -30,13 +60,13 @@
     "value": "••••••"
    }
   ],
-  "display_type": "Hyperdx",
-  "docs_path": null,
+  "display_type": "ClickStack",
+  "docs_path": "/backends/clickstack",
   "fields": {
    "endpoint": "http://localhost:4318/v1/traces"
   },
   "headers": null,
-  "known_type": false,
+  "known_type": true,
   "log_overrides": null,
   "metrics_temporality": {
    "source": "entry",
@@ -47,8 +77,8 @@
   "signals": {
    "logs": {
     "configured": "auto",
-    "exported": false,
-    "supported": false
+    "exported": true,
+    "supported": true
    },
    "metrics": {
     "configured": "auto",
@@ -69,7 +99,7 @@
   }
  },
  "signal_support": {
-  "logs": false,
+  "logs": true,
   "metrics": true,
   "traces": true
  },

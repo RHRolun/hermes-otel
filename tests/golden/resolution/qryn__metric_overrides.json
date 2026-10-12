@@ -4,7 +4,7 @@
   "supports_logs": true,
   "supports_metrics": true
  },
- "display_name": "Qryn",
+ "display_name": "Gigapipe",
  "entry": {
   "endpoint": "http://localhost:4318/v1/traces",
   "metrics_temporality": "delta",
@@ -14,7 +14,18 @@
   "type": "qryn",
   "user": "<secret>"
  },
- "error": "ValueError: unknown backend type 'qryn'",
+ "log_targets": {
+  "count": 1,
+  "exporters": [
+   {
+    "endpoint": "http://localhost:4318/v1/logs",
+    "headers": {
+     "Authorization": "Basic <secret>",
+     "x-global": "g"
+    }
+   }
+  ]
+ },
  "mcp": {
   "backend_type": "qryn",
   "name": "qryn-entry",
@@ -22,6 +33,25 @@
  },
  "path": "metric_overrides",
  "preset_temporality": null,
+ "resolved": {
+  "display_name": "qryn-entry",
+  "endpoint": "http://localhost:4318/v1/traces",
+  "headers": {
+   "Authorization": "Basic <secret>"
+  },
+  "log_overrides": null,
+  "logs_endpoint": null,
+  "logs_headers": null,
+  "metrics_endpoint": null,
+  "metrics_headers": null,
+  "metrics_temporality": "delta",
+  "resource_attributes": null,
+  "root_usage": false,
+  "supports_logs": true,
+  "supports_metrics": true,
+  "supports_traces": true,
+  "type": "gigapipe"
+ },
  "settings_card": {
   "credentials": [
    {
@@ -37,13 +67,13 @@
     "value": "••••••"
    }
   ],
-  "display_type": "Qryn",
-  "docs_path": null,
+  "display_type": "Gigapipe",
+  "docs_path": "/backends/gigapipe",
   "fields": {
    "endpoint": "http://localhost:4318/v1/traces"
   },
   "headers": null,
-  "known_type": false,
+  "known_type": true,
   "log_overrides": null,
   "metrics_temporality": {
    "source": "entry",
@@ -54,8 +84,8 @@
   "signals": {
    "logs": {
     "configured": "auto",
-    "exported": false,
-    "supported": false
+    "exported": true,
+    "supported": true
    },
    "metrics": {
     "configured": "auto",
@@ -76,7 +106,7 @@
   }
  },
  "signal_support": {
-  "logs": false,
+  "logs": true,
   "metrics": true,
   "traces": true
  },
