@@ -24,6 +24,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from . import backends as _backends
 from . import plugin_config as pc
+from .backend_specs import SPECS, spec_for
 from .plugin_config import (
     FIELD_DOCS,
     FIELD_GROUPS,
@@ -128,62 +129,7 @@ def _display_map(
 # (backends.py). Types absent here (phoenix, jaeger, tempo, lgtm, otlp) take
 # credentials only through ``headers``.
 _TYPE_CREDENTIALS: Dict[str, Dict[str, Tuple[str, ...]]] = {
-    "langfuse": {
-        "public_key": ("OTEL_LANGFUSE_PUBLIC_API_KEY", "LANGFUSE_PUBLIC_KEY"),
-        "secret_key": ("OTEL_LANGFUSE_SECRET_API_KEY", "LANGFUSE_SECRET_KEY"),
-    },
-    "signoz": {"ingestion_key": ("OTEL_SIGNOZ_INGESTION_KEY",)},
-    "uptrace": {"dsn": ("OTEL_UPTRACE_DSN", "UPTRACE_DSN")},
-    "openobserve": {
-        "user": ("OTEL_OPENOBSERVE_USER", "OPENOBSERVE_USER"),
-        "password": ("OTEL_OPENOBSERVE_PASSWORD", "OPENOBSERVE_PASSWORD"),
-    },
-    "parseable": {"api_key": ("OTEL_PARSEABLE_API_KEY", "PARSEABLE_API_KEY")},
-    "honeycomb": {"api_key": ("OTEL_HONEYCOMB_API_KEY", "HONEYCOMB_API_KEY")},
-    "langsmith": {
-        "api_key": ("OTEL_LANGSMITH_API_KEY", "LANGSMITH_API_KEY"),
-        "project": ("OTEL_LANGSMITH_PROJECT", "LANGSMITH_PROJECT"),
-    },
-    "elastic": {"api_key": ("OTEL_ELASTIC_API_KEY", "ELASTIC_API_KEY")},
-    "openlit": {"api_key": ("OTEL_OPENLIT_API_KEY", "OPENLIT_API_KEY")},
-    "opik": {
-        "api_key": ("OTEL_OPIK_API_KEY", "OPIK_API_KEY"),
-        "workspace": ("OPIK_WORKSPACE",),
-        "project": ("OPIK_PROJECT_NAME",),
-    },
-    "laminar": {"api_key": ("OTEL_LAMINAR_API_KEY", "LMNR_PROJECT_API_KEY")},
-    "langwatch": {
-        "api_key": ("OTEL_LANGWATCH_API_KEY", "LANGWATCH_API_KEY"),
-        "project": ("LANGWATCH_PROJECT_ID",),
-    },
-    "latitude": {
-        "api_key": ("OTEL_LATITUDE_API_KEY", "LATITUDE_API_KEY"),
-        "project": ("LATITUDE_PROJECT",),
-    },
-    "greptime": {
-        "user": ("OTEL_GREPTIME_USER",),
-        "password": ("OTEL_GREPTIME_PASSWORD",),
-    },
-    "clickstack": {"api_key": ("OTEL_CLICKSTACK_API_KEY", "HYPERDX_API_KEY")},
-    "victoria": {
-        "user": ("OTEL_VICTORIA_USER",),
-        "password": ("OTEL_VICTORIA_PASSWORD",),
-    },
-    "aspire": {"api_key": ("OTEL_ASPIRE_API_KEY",)},
-    "gigapipe": {
-        "user": ("OTEL_GIGAPIPE_USER",),
-        "password": ("OTEL_GIGAPIPE_PASSWORD",),
-    },
-    "agenta": {"api_key": ("OTEL_AGENTA_API_KEY", "AGENTA_API_KEY")},
-    "mlflow": {
-        "api_key": ("OTEL_MLFLOW_API_KEY", "MLFLOW_TRACKING_TOKEN"),
-        "experiment_id": ("OTEL_MLFLOW_EXPERIMENT_ID", "MLFLOW_EXPERIMENT_ID"),
-    },
-    "weave": {
-        "api_key": ("OTEL_WEAVE_API_KEY", "WANDB_API_KEY"),
-        "entity": ("WANDB_ENTITY", "DEFAULT_WANDB_ENTITY"),
-        "project": ("WANDB_PROJECT", "DEFAULT_WANDB_PROJECT"),
-    },
+    s.type: {c.field: c.env for c in s.credentials} for s in SPECS if s.credentials
 }
 _ALL_CREDENTIAL_FIELDS = (
     "public_key",
@@ -245,7 +191,20 @@ def _credential_report(
 # Keys the dashboard's query adapters read from a backend entry that are not
 # ``BackendConfig`` fields (the loader drops them; the adapters read the raw
 # yaml). Shown on the Settings card so a ``query_port`` is not invisible.
-_QUERY_FIELDS = ("query_port", "project_name", "service_name", "project_id", "org", "logs_stream")
+# The dashboard-only keys an entry may carry (what each adapter reads, from the
+# manifest), shown on the card so a query-side setting is never invisible.
+_QUERY_FIELDS: Tuple[str, ...] = tuple(
+    dict.fromkeys(
+        ("query_port", "project_name", "service_name", "project_id", "org", "logs_stream")
+        + tuple(
+            k
+            for s in SPECS
+            for k in s.query_keys
+            # a key that is also an exporter field (project, ui_url) is shown as such
+            if k not in {f.name for f in dataclasses.fields(BackendConfig)}
+        )
+    )
+)
 
 # Where each type's web UI lives relative to its OTLP endpoint, for the card's
 # link when the entry sets no ``ui_url``:
@@ -259,48 +218,7 @@ _QUERY_FIELDS = ("query_port", "project_name", "service_name", "project_id", "or
 #            types whose query API and UI share a port (Jaeger, SigNoz)
 #   fixed    a SaaS UI at a known address (Honeycomb, W&B Weave)
 #   None     nothing to derive (a generic OTLP collector has no UI)
-_UI_RULES: Dict[str, Optional[str]] = {
-    "phoenix": "origin",
-    "langfuse": "origin",
-    "openobserve": "origin",
-    "uptrace": "origin",
-    "parseable": "origin",
-    "jaeger": "proxied",
-    # UI at /zipkin on the OTLP port (the root redirects there).
-    "zipkin": "origin",
-    # Dashboard at /dashboard on the one HTTP port that also ingests OTLP.
-    "greptime": "origin",
-    # UI on :8080, OTLP on the Collector's :4318 — origin only for a proxied hostname.
-    "clickstack": "proxied",
-    # VictoriaTraces serves vmui on the port it ingests on (/select/vmui).
-    "victoria": "origin",
-    # UI on 18888, OTLP on 18890 — origin only for a proxied hostname.
-    "aspire": "proxied",
-    # The built-in qryn-view UI, the OTLP routes and the query APIs share one port.
-    "gigapipe": "origin",
-    # UI and /api (ingest included) behind one front door; cloud: the same origin.
-    "agenta": "origin",
-    "signoz": "proxied",
-    "tempo": "proxied",
-    "lgtm": "proxied",
-    "honeycomb": "fixed",
-    "langsmith": "fixed",
-    "weave": "fixed",
-    "otlp": None,
-    "elastic": None,
-    # UI on :3000, OTLP on :4318 — the origin only when a proxied hostname is used.
-    "openlit": "proxied",
-    # UI, REST API and OTLP ingest share one port.
-    "mlflow": "origin",
-    # Self-host: UI and API on one port; cloud: the comet.com origin.
-    "opik": "origin",
-    # UI on :5667, ingest on the app-server :8100/:8000 — origin only for a proxied host.
-    "laminar": "proxied",
-    # UI and OTLP on one port (5560 / app.langwatch.ai).
-    "langwatch": "origin",
-    # Ingest on :3002, UI on :3000 — origin only for a proxied hostname.
-    "latitude": "proxied",
-}
+_UI_RULES: Dict[str, Optional[str]] = {s.type: s.ui_rule for s in SPECS}
 _UI_QUERY_PORT_TYPES = {"jaeger", "signoz"}
 _HONEYCOMB_UI = {"us": "https://ui.honeycomb.io", "eu": "https://ui.eu1.honeycomb.io"}
 _LANGSMITH_UI = {"us": "https://smith.langchain.com", "eu": "https://eu.smith.langchain.com"}
@@ -440,8 +358,9 @@ def _backend_summary(
     bc: BackendConfig, raw: Dict[str, Any], reveal: bool, top_temporality: Optional[str] = None
 ) -> Dict[str, Any]:
     t = (bc.type or "").strip().lower()
+    spec = spec_for(t)
     fields = {f: getattr(bc, f) for f in _PLAIN_BACKEND_FIELDS if getattr(bc, f) is not None}
-    type_fallbacks = _TYPE_CREDENTIALS.get(t, {})
+    type_fallbacks = _TYPE_CREDENTIALS.get(spec.type if spec is not None else t, {})
     credentials = []
     for f in _ALL_CREDENTIAL_FIELDS:
         fallbacks = type_fallbacks.get(f, ())
@@ -452,8 +371,8 @@ def _backend_summary(
         "type": bc.type,
         "name": bc.name or bc.type,
         "display_type": _backends.display_name(t),
-        "known_type": t in _backends.KNOWN_TYPES,
-        "docs_path": f"/backends/{t}" if t in _backends.KNOWN_TYPES else None,
+        "known_type": spec is not None,
+        "docs_path": spec.docs_path if spec is not None else None,
         "ui": _ui_link(bc, raw),
         "signals": _signal_report(bc),
         "metrics_temporality": _temporality_report(bc, top_temporality),
@@ -701,216 +620,16 @@ KNOWN_ENV_VARS: Tuple[Tuple[str, str, str], ...] = (
     ),
     ("OTEL_PROJECT_NAME", "plugin", "Phoenix project name when `project_name` is not set"),
     (
+        "HERMES_OTEL_QUERY_HOST",
+        "plugin",
+        "Dashboard: host that replaces every adapter's query host (a Docker-side name, #413)",
+    ),
+    (
         "HERMES_PLUGIN_PAYLOAD_MAX_CHARS",
         "hermes",
         'Hermes-side cap on the sanitised hook payload (`request["body"]`), default 50000; the plugin reads the raw `request_messages` so full capture is unaffected',
     ),
-    ("OTEL_PHOENIX_ENDPOINT", "backend", "Single-backend mode: Phoenix OTLP traces URL"),
-    ("OTEL_LANGFUSE_ENDPOINT", "backend", "Single-backend mode: Langfuse OTLP traces URL"),
-    ("LANGFUSE_BASE_URL", "backend", "Langfuse base URL (alternative to the endpoint)"),
-    ("LANGFUSE_PUBLIC_KEY", "backend", "Langfuse public key fallback"),
-    ("LANGFUSE_SECRET_KEY", "backend", "Langfuse secret key fallback"),
-    ("OTEL_LANGFUSE_PUBLIC_API_KEY", "backend", "Langfuse public key (preferred name)"),
-    ("OTEL_LANGFUSE_SECRET_API_KEY", "backend", "Langfuse secret key (preferred name)"),
-    ("OTEL_SIGNOZ_ENDPOINT", "backend", "Single-backend mode: SigNoz OTLP URL"),
-    ("OTEL_SIGNOZ_INGESTION_KEY", "backend", "SigNoz Cloud ingestion key"),
-    ("OTEL_JAEGER_ENDPOINT", "backend", "Single-backend mode: Jaeger OTLP URL"),
-    ("OTEL_ZIPKIN_ENDPOINT", "backend", "Single-backend mode: Zipkin OTLP URL (zipkin-otel image)"),
-    (
-        "OTEL_GREPTIME_ENDPOINT",
-        "backend",
-        "Single-backend mode: GreptimeDB HTTP origin (OTLP under /v1/otlp)",
-    ),
-    (
-        "OTEL_GREPTIME_DB",
-        "backend",
-        "GreptimeDB database for all three signals (X-Greptime-DB-Name; default public)",
-    ),
-    ("OTEL_GREPTIME_USER", "backend", "GreptimeDB user for Basic auth (only with a user provider)"),
-    ("OTEL_GREPTIME_PASSWORD", "backend", "GreptimeDB password for Basic auth"),
-    (
-        "OTEL_CLICKSTACK_ENDPOINT",
-        "backend",
-        "Single-backend mode: ClickStack Collector OTLP/HTTP base",
-    ),
-    (
-        "OTEL_CLICKSTACK_API_KEY",
-        "backend",
-        "ClickStack ingestion API key (bare authorization header; preferred name)",
-    ),
-    (
-        "HYPERDX_API_KEY",
-        "backend",
-        "ClickStack / HyperDX ingestion API key fallback (the vendor SDK variable)",
-    ),
-    (
-        "OTEL_VICTORIA_ENDPOINT",
-        "backend",
-        "Single-backend mode: VictoriaTraces origin (OTLP at /insert/opentelemetry/v1/traces)",
-    ),
-    (
-        "OTEL_VICTORIA_METRICS_ENDPOINT",
-        "backend",
-        "VictoriaMetrics origin (OTLP at /opentelemetry/v1/metrics); metrics off without it",
-    ),
-    (
-        "OTEL_VICTORIA_LOGS_ENDPOINT",
-        "backend",
-        "VictoriaLogs origin (OTLP at /insert/opentelemetry/v1/logs); logs off without it",
-    ),
-    (
-        "OTEL_VICTORIA_USER",
-        "backend",
-        "Basic auth user for the Victoria stores (only with -httpAuth.*)",
-    ),
-    ("OTEL_VICTORIA_PASSWORD", "backend", "Basic auth password for the Victoria stores"),
-    ("OTEL_ASPIRE_ENDPOINT", "backend", "Single-backend mode: Aspire Dashboard OTLP/HTTP base"),
-    (
-        "OTEL_ASPIRE_API_KEY",
-        "backend",
-        "Aspire Dashboard OTLP API key (x-otlp-api-key); only in ApiKey auth mode",
-    ),
-    ("OTEL_GIGAPIPE_ENDPOINT", "backend", "Single-backend mode: Gigapipe (qryn) OTLP/HTTP base"),
-    (
-        "OTEL_GIGAPIPE_USER",
-        "backend",
-        "Basic auth user for Gigapipe (only with GIGAPIPE_LOGIN/PASSWORD)",
-    ),
-    ("OTEL_GIGAPIPE_PASSWORD", "backend", "Basic auth password for Gigapipe"),
-    ("OTEL_AGENTA_ENDPOINT", "backend", "Agenta origin for a self-hosted stack (cloud by default)"),
-    (
-        "OTEL_AGENTA_API_KEY",
-        "backend",
-        "Agenta project API key (Authorization: ApiKey; preferred name)",
-    ),
-    ("AGENTA_API_KEY", "backend", "Agenta project API key fallback (the SDK variable)"),
-    ("OTEL_TEMPO_ENDPOINT", "backend", "Single-backend mode: Tempo / LGTM OTLP URL"),
-    ("OTEL_UPTRACE_ENDPOINT", "backend", "Single-backend mode: Uptrace OTLP URL"),
-    ("OTEL_UPTRACE_DSN", "backend", "Uptrace DSN (preferred name)"),
-    ("UPTRACE_DSN", "backend", "Uptrace DSN fallback"),
-    ("OTEL_OPENOBSERVE_ENDPOINT", "backend", "Single-backend mode: OpenObserve OTLP URL"),
-    ("OTEL_OPENOBSERVE_STREAM", "backend", "OpenObserve stream name (default `default`)"),
-    ("OTEL_OPENOBSERVE_USER", "backend", "OpenObserve user (preferred name)"),
-    ("OTEL_OPENOBSERVE_PASSWORD", "backend", "OpenObserve password (preferred name)"),
-    ("OPENOBSERVE_USER", "backend", "OpenObserve user fallback"),
-    ("OPENOBSERVE_PASSWORD", "backend", "OpenObserve password fallback"),
-    ("OTEL_PARSEABLE_ENDPOINT", "backend", "Single-backend mode: Parseable OTLP URL"),
-    ("OTEL_PARSEABLE_API_KEY", "backend", "Parseable API key (preferred name)"),
-    ("PARSEABLE_API_KEY", "backend", "Parseable API key fallback"),
-    (
-        "PARSEABLE_TRACES_DATASET",
-        "backend",
-        "Parseable dataset for traces (default `hermes-traces`)",
-    ),
-    (
-        "PARSEABLE_METRICS_DATASET",
-        "backend",
-        "Parseable dataset for metrics (default `hermes-metrics`)",
-    ),
-    ("PARSEABLE_LOGS_DATASET", "backend", "Parseable dataset for logs (default `hermes-logs`)"),
-    ("OTEL_HONEYCOMB_ENDPOINT", "backend", "Single-backend mode: Honeycomb OTLP URL"),
-    ("OTEL_HONEYCOMB_API_KEY", "backend", "Honeycomb API key (preferred name)"),
-    ("HONEYCOMB_API_KEY", "backend", "Honeycomb API key fallback"),
-    (
-        "OTEL_ELASTIC_ENDPOINT",
-        "backend",
-        "Single-backend mode: Elastic OTLP URL (mOTLP or EDOT Collector)",
-    ),
-    ("OTEL_ELASTIC_API_KEY", "backend", "Elastic API key (preferred name; needs the endpoint too)"),
-    ("ELASTIC_API_KEY", "backend", "Elastic API key fallback"),
-    ("OTEL_OPENLIT_ENDPOINT", "backend", "Single-backend mode: OpenLIT OTLP/HTTP URL"),
-    ("OTEL_OPENLIT_API_KEY", "backend", "OpenLIT API key (preferred name; needs the endpoint too)"),
-    ("OPENLIT_API_KEY", "backend", "OpenLIT API key fallback"),
-    ("OTEL_MLFLOW_ENDPOINT", "backend", "Single-backend mode: MLflow tracking server URL"),
-    (
-        "OTEL_MLFLOW_EXPERIMENT_ID",
-        "backend",
-        "MLflow experiment id for the x-mlflow-experiment-id header (preferred name)",
-    ),
-    ("MLFLOW_EXPERIMENT_ID", "backend", "MLflow experiment id fallback"),
-    (
-        "OTEL_MLFLOW_API_KEY",
-        "backend",
-        "MLflow tracking token (preferred name; needs the endpoint too)",
-    ),
-    ("MLFLOW_TRACKING_TOKEN", "backend", "MLflow tracking token fallback"),
-    ("OTEL_OPIK_ENDPOINT", "backend", "Single-backend mode: Opik base URL (default: Comet cloud)"),
-    ("OTEL_OPIK_API_KEY", "backend", "Opik API key (preferred name; enables Opik in env-var mode)"),
-    ("OPIK_API_KEY", "backend", "Opik API key fallback"),
-    ("OPIK_URL_OVERRIDE", "backend", "Opik SDK base URL fallback (…/api form accepted)"),
-    ("OPIK_WORKSPACE", "backend", "Opik workspace for the Comet-Workspace header (cloud)"),
-    ("OPIK_PROJECT_NAME", "backend", "Opik project for the projectName header"),
-    (
-        "OTEL_LAMINAR_ENDPOINT",
-        "backend",
-        "Single-backend mode: Laminar app-server URL (default: Laminar cloud)",
-    ),
-    (
-        "OTEL_LAMINAR_API_KEY",
-        "backend",
-        "Laminar project API key (preferred name; enables Laminar in env-var mode)",
-    ),
-    ("LMNR_PROJECT_API_KEY", "backend", "Laminar project API key fallback"),
-    ("LMNR_BASE_URL", "backend", "Laminar SDK base URL fallback"),
-    (
-        "OTEL_LANGWATCH_ENDPOINT",
-        "backend",
-        "Single-backend mode: LangWatch base URL (default: LangWatch cloud)",
-    ),
-    (
-        "OTEL_LANGWATCH_API_KEY",
-        "backend",
-        "LangWatch project API key (preferred name; enables LangWatch in env-var mode)",
-    ),
-    ("LANGWATCH_API_KEY", "backend", "LangWatch API key fallback"),
-    ("LANGWATCH_ENDPOINT", "backend", "LangWatch SDK base URL fallback"),
-    (
-        "LANGWATCH_PROJECT_ID",
-        "backend",
-        "LangWatch project id for the X-Project-Id header (service keys)",
-    ),
-    (
-        "OTEL_LATITUDE_ENDPOINT",
-        "backend",
-        "Single-backend mode: Latitude ingest URL (default: Latitude cloud)",
-    ),
-    (
-        "OTEL_LATITUDE_API_KEY",
-        "backend",
-        "Latitude API key (preferred name; enables Latitude in env-var mode)",
-    ),
-    ("LATITUDE_API_KEY", "backend", "Latitude API key fallback"),
-    (
-        "LATITUDE_PROJECT",
-        "backend",
-        "Latitude project slug for the mandatory X-Latitude-Project header",
-    ),
-    ("LATITUDE_INGEST_URL", "backend", "Latitude ingest URL fallback"),
-    ("OTEL_WEAVE_ENDPOINT", "backend", "Single-backend mode: W&B Weave OTLP URL"),
-    ("WANDB_OTLP_ENDPOINT", "backend", "Weave OTLP URL fallback"),
-    ("OTEL_WEAVE_BASE_URL", "backend", "Weave base URL"),
-    ("WANDB_BASE_URL", "backend", "Weave base URL fallback"),
-    ("OTEL_WEAVE_API_KEY", "backend", "Weave API key (preferred name)"),
-    ("WANDB_API_KEY", "backend", "Weave API key fallback"),
-    ("WANDB_ENTITY", "backend", "Weave entity"),
-    ("WANDB_PROJECT", "backend", "Weave project"),
-    ("DEFAULT_WANDB_ENTITY", "backend", "Weave entity fallback"),
-    ("DEFAULT_WANDB_PROJECT", "backend", "Weave project fallback"),
-    ("OTEL_LANGSMITH_API_KEY", "backend", "LangSmith API key (preferred name; the env opt-in)"),
-    (
-        "OTEL_LANGSMITH_ENDPOINT",
-        "backend",
-        "LangSmith endpoint override (default `https://api.smith.langchain.com/otel/v1/traces`; "
-        "`region: eu` picks the EU host)",
-    ),
-    ("OTEL_LANGSMITH_PROJECT", "backend", "LangSmith project (the `Langsmith-Project` header)"),
-    ("LANGSMITH_API_KEY", "backend", "LangSmith API key fallback"),
-    (
-        "LANGSMITH_ENDPOINT",
-        "backend",
-        "LangSmith API base fallback (`/otel/v1/traces` is appended)",
-    ),
-    ("LANGSMITH_PROJECT", "backend", "LangSmith project fallback"),
+    *((name, "backend", description) for s in SPECS for name, description in s.env_vars),
     (
         "OTEL_EXPORTER_OTLP_ENDPOINT",
         "otel",
