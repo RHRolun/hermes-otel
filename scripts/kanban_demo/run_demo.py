@@ -198,31 +198,37 @@ def alive(pid: int) -> bool:
 
 
 def live_rows(store: Path, kind: str, since_ns: int) -> List[Dict[str, Any]]:
+    """Rows of one kind written since ``since_ns``, through the plugin's own
+    ``LiveStore`` reader (the schema is its business, #404)."""
     if not store.exists():
         return []
-    con = sqlite3.connect(f"file:{store}?mode=ro", uri=True)
+    from hermes_otel import semconv
+    from hermes_otel.live_store import LiveStore
+
+    ls = LiveStore(db_path=str(store))
     try:
-        rows = con.execute(
-            "select data, session_id, trace_id, span_id, parent_span_id, status, name "
-            "from events where kind=? and ts >= ? order by seq",
-            (kind, since_ns),  # the live store's ts is unix nanoseconds
-        ).fetchall()
+        rows = {"span": ls.spans, "metric": ls.metrics, "log": ls.logs}[kind]()
     finally:
-        con.close()
+        ls.close()
     out = []
-    for data, session_id, trace_id, span_id, parent, status, name in rows:
-        try:
-            d = json.loads(data)
-        except json.JSONDecodeError:
+    for d in rows:
+        ts = int(
+            d.get("end_time_unix_nano")
+            or d.get("start_time_unix_nano")
+            or d.get("time_unix_nano")
+            or 0
+        )
+        if ts < since_ns:
             continue
+        attrs = d.get("attributes") or {}
         d.update(
             {
-                "_session_id": session_id,
-                "_trace_id": trace_id,
-                "_span_id": span_id,
-                "_parent": parent,
-                "_status": status,
-                "_name": name,
+                "_session_id": d.get("session_id") or semconv.first(attrs, semconv.SESSION_KEYS),
+                "_trace_id": d.get("trace_id"),
+                "_span_id": d.get("span_id"),
+                "_parent": d.get("parent_span_id"),
+                "_status": d.get("status"),
+                "_name": d.get("name") or d.get("event_name") or d.get("logger"),
             }
         )
         out.append(d)
