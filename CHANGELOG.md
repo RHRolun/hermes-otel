@@ -1,5 +1,33 @@
 # Changelog
 
+## [1.25.0](https://github.com/briancaffey/hermes-otel/compare/hermes-otel-v1.24.0...hermes-otel-v1.25.0) (2026-10-12)
+
+
+### Features
+
+* **backends:** explicit Agenta backend (type: agenta) with a traces dashboard adapter on the spans query API ([#378](https://github.com/briancaffey/hermes-otel/issues/378)) ([b36b221](https://github.com/briancaffey/hermes-otel/commit/b36b221f3df922d9c8a088c5c06069b277e130d1))
+* **backends:** explicit Aspire Dashboard backend (type: aspire) with a traces + logs dashboard adapter on its read API ([#376](https://github.com/briancaffey/hermes-otel/issues/376)) ([580227c](https://github.com/briancaffey/hermes-otel/commit/580227c7efe399db9446bf4b432220f0415a7d16))
+* **backends:** explicit ClickStack / HyperDX backend (type: clickstack) with a ClickHouse SQL dashboard adapter for traces, metrics and logs ([#374](https://github.com/briancaffey/hermes-otel/issues/374)) ([f113423](https://github.com/briancaffey/hermes-otel/commit/f1134233c58a1382bfae5a506e1ad6a172b2d07e))
+* **backends:** explicit Gigapipe (qryn) backend (type: gigapipe) with the LGTM dashboard adapter on one port ([#377](https://github.com/briancaffey/hermes-otel/issues/377)) ([5c50e6e](https://github.com/briancaffey/hermes-otel/commit/5c50e6ed67b99048d3d39c30ebb52398102e3893))
+* **backends:** explicit GreptimeDB backend (type: greptime) with per-signal headers and a traces + metrics + logs dashboard adapter ([#373](https://github.com/briancaffey/hermes-otel/issues/373)) ([adb8eaa](https://github.com/briancaffey/hermes-otel/commit/adb8eaa834874ceb8e35744c49fe7575254e18da))
+* **backends:** explicit VictoriaTraces + VictoriaMetrics + VictoriaLogs backend (type: victoria) with per-signal endpoints and a Jaeger + Prometheus + LogsQL dashboard adapter ([#375](https://github.com/briancaffey/hermes-otel/issues/375)) ([4f64e0d](https://github.com/briancaffey/hermes-otel/commit/4f64e0da6cb078dddc78d9b20be3bb6ec34d46d1))
+* **backends:** explicit Zipkin backend (type: zipkin) via the zipkin-otel image, with an API v2 dashboard adapter ([#372](https://github.com/briancaffey/hermes-otel/issues/372)) ([c20dcff](https://github.com/briancaffey/hermes-otel/commit/c20dcffce839a5f3bd936667b94c6626a2e0161e))
+* **backends:** generic OpenTelemetry Collector folder with debug, otlphttp, Azure Monitor, AWS and Google Cloud targets (generic type: otlp) ([#380](https://github.com/briancaffey/hermes-otel/issues/380)) ([6f942ff](https://github.com/briancaffey/hermes-otel/commit/6f942ff4ba3206248bcd15cde9428ac9198cd4e6))
+* **backends:** otel-desktop-viewer compose folder and otel-tui recipe (generic type: otlp) ([#379](https://github.com/briancaffey/hermes-otel/issues/379)) ([698252f](https://github.com/briancaffey/hermes-otel/commit/698252f3e8c2920dcca67d814a0a056383ae0e4d))
+* **hooks:** kanban board transitions as spans, a counter and events, plus an end-to-end demo ([#362](https://github.com/briancaffey/hermes-otel/issues/362)) ([de4ae0a](https://github.com/briancaffey/hermes-otel/commit/de4ae0ae38336128718df5326ccdfe8169c183be))
+* **hooks:** observe terminal output truncation and final response size through the transform hooks ([#360](https://github.com/briancaffey/hermes-otel/issues/360)) ([025a964](https://github.com/briancaffey/hermes-otel/commit/025a9642f19ed900e130db430c181a99c9c414e4)), closes [#33](https://github.com/briancaffey/hermes-otel/issues/33)
+* **skill:** otel.py mcp-config derives the opentelemetry-mcp server config from the configured backends; the skill prefers the MCP tools when present ([#384](https://github.com/briancaffey/hermes-otel/issues/384)) ([4d674e8](https://github.com/briancaffey/hermes-otel/commit/4d674e83cd117ca3a7a16ec506786476510f550a)), closes [#304](https://github.com/briancaffey/hermes-otel/issues/304)
+
+
+### Bug Fixes
+
+* **catalog:** install as hermes_otel, render the entry under the merged name and disclosure ([#381](https://github.com/briancaffey/hermes-otel/issues/381)) ([aec9d9f](https://github.com/briancaffey/hermes-otel/commit/aec9d9f8105dfa040551583cdfbab8f6d21926a1)), closes [#134](https://github.com/briancaffey/hermes-otel/issues/134)
+
+
+### Documentation
+
+* **mcp:** verify Traceloop's opentelemetry-mcp against Hermes traces on Jaeger and Tempo, document the setup for Hermes, Claude Code and Cursor ([#383](https://github.com/briancaffey/hermes-otel/issues/383)) ([6abd6b1](https://github.com/briancaffey/hermes-otel/commit/6abd6b1057be61cffe984b75f4f3e607a71f2baa)), closes [#303](https://github.com/briancaffey/hermes-otel/issues/303)
+
 ## [1.24.0](https://github.com/briancaffey/hermes-otel/compare/hermes-otel-v1.23.0...hermes-otel-v1.24.0) (2026-10-11)
 
 
