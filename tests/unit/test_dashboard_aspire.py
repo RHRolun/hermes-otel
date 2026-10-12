@@ -201,9 +201,14 @@ class TestHelpers:
         assert asp.level_for(None, None) == "INFO"
 
     def test_otlp_value_and_attrs(self):
-        assert asp.otlp_value({"intValue": "7"}) == 7
-        assert asp.otlp_value({"boolValue": True}) is True
-        assert asp.attrs_dict([_attr("a", 1), _attr("b", "x"), {"nope": 1}]) == {"a": 1, "b": "x"}
+        from hermes_otel.dashboard.backends.shapes import otlp_attrs_to_dict, otlp_unwrap
+
+        assert otlp_unwrap({"intValue": "7"}) == 7
+        assert otlp_unwrap({"boolValue": True}) is True
+        assert otlp_attrs_to_dict([_attr("a", 1), _attr("b", "x"), {"nope": 1}]) == {
+            "a": 1,
+            "b": "x",
+        }
 
 
 class TestSearch:

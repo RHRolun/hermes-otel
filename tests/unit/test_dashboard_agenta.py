@@ -141,8 +141,10 @@ class TestSetup:
 
 class TestHelpers:
     def test_flatten_and_iso(self):
-        assert ag.flatten(
-            {"gen_ai": {"usage": {"total_tokens": 1}}, "session_id": "s", "e": {}}
+        from hermes_otel.dashboard.backends.shapes import flatten_dotted
+
+        assert flatten_dotted(
+            {"gen_ai": {"usage": {"total_tokens": 1}}, "session_id": "s", "e": {}}, keep_empty=True
         ) == {
             "gen_ai.usage.total_tokens": 1,
             "session_id": "s",

@@ -14,14 +14,14 @@
  "outcomes": {
   "get_trace": {
    "error": {
-    "detail": "ClickHouse error: internal error",
+    "detail": "ClickHouse returned 500: internal error",
     "kind": "backend",
     "status_code": 502
    }
   },
   "search": {
    "error": {
-    "detail": "ClickHouse error: internal error",
+    "detail": "ClickHouse returned 500: internal error",
     "kind": "backend",
     "status_code": 502
    }

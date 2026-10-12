@@ -16,19 +16,10 @@ from urllib import parse as _urlparse
 import pytest
 
 from hermes_otel.dashboard import backends
+from hermes_otel.dashboard.backends import base
 from hermes_otel.dashboard.backends.base import BackendError
 
 NS = 1_000_000_000
-
-# Module-level probe caches the adapters keep (what a server answered once).
-# ``backends.clear_caches()`` clears the config and instance caches only.
-PROBE_CACHES: Tuple[Tuple[str, str], ...] = (
-    ("jaeger", "_API_PROBE_CACHE"),
-    ("phoenix", "_ROOT_ARGS_CACHE"),
-    ("uptrace", "_DIALECT_CACHE"),
-    ("langfuse", "_API_CACHE"),
-    ("greptime", "_COLUMNS_CACHE"),
-)
 
 
 def backend_modules() -> List[Any]:
@@ -41,12 +32,11 @@ def backend_modules() -> List[Any]:
 
 
 def clear_probe_caches() -> None:
-    for mod, name in PROBE_CACHES:
-        cache = getattr(
-            importlib.import_module(f"hermes_otel.dashboard.backends.{mod}"), name, None
-        )
-        if isinstance(cache, dict):
-            cache.clear()
+    """The module-level probe caches the adapters keep (what a server answered
+    once), all registered with ``base.register_cache``; ``backends.clear_caches()``
+    clears the config and instance caches only."""
+    backend_modules()  # import every adapter so each cache is registered
+    base.clear_probe_caches()
 
 
 def isolate_backends(monkeypatch) -> None:

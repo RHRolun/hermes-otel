@@ -161,10 +161,13 @@ def test_langfuse_maps_the_generic_session_key():
 
 def test_backend_cards_carry_the_session_id():
     from hermes_otel.dashboard.backends import openobserve, phoenix, tempo
+    from hermes_otel.dashboard.backends.shapes import CARD_ATTRIBUTE_KEYS
 
-    assert "hermes.session_id" in phoenix._CARD_ATTR_KEYS
+    # One table for every adapter (#403); Tempo spells it as a select list.
+    assert "hermes.session_id" in CARD_ATTRIBUTE_KEYS
     assert ".hermes.session_id" in tempo._CARD_SELECT_ATTRS
-    assert "hermes.session_id" in openobserve._CARD_ATTR_KEYS
+    assert openobserve._CARD_ATTR_OO_COLS == tuple(k.replace(".", "_") for k in CARD_ATTRIBUTE_KEYS)
+    assert phoenix.CARD_ATTRIBUTE_SET == frozenset(CARD_ATTRIBUTE_KEYS)
     row = {"operation_name": "agent", "hermes_session_id": "s-1", "hermes_turn_number": "2"}
     attrs = openobserve._row_to_card_attrs(row)
     assert attrs["hermes.session_id"] == "s-1" and attrs["hermes.turn.number"] == 2

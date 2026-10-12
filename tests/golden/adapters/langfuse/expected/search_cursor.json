@@ -17,12 +17,12 @@
   "traces": [
    {
     "durationMs": 4029,
-    "rootServiceName": "langfuse",
+    "rootServiceName": "hermes-agent",
     "rootTraceName": "agent",
     "spanCount": 3,
     "spanSets": [
      {
-      "matched": 1,
+      "matched": 3,
       "spans": [
        {
         "attributes": [

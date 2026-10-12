@@ -124,7 +124,7 @@ class TestSigNoz:
 
         def rejected(url, headers=None, timeout=None):
             calls.append("get")
-            raise BackendError(502, "Backend returned 405: method not allowed")
+            raise BackendError(502, "Backend returned 405: method not allowed", http_status=405)
 
         monkeypatch.setattr(signoz, "http_get_json", rejected)
         monkeypatch.setattr(

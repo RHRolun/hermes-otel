@@ -14,14 +14,14 @@
  "outcomes": {
   "get_trace": {
    "error": {
-    "detail": "ClickHouse error: 404 page not found",
+    "detail": "ClickHouse returned 404: 404 page not found",
     "kind": "backend",
     "status_code": 502
    }
   },
   "search": {
    "error": {
-    "detail": "ClickHouse error: 404 page not found",
+    "detail": "ClickHouse returned 404: 404 page not found",
     "kind": "backend",
     "status_code": 502
    }

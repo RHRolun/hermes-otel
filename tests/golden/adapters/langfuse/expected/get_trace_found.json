@@ -19,7 +19,7 @@
       {
        "key": "service.name",
        "value": {
-        "stringValue": "langfuse"
+        "stringValue": "hermes-agent"
        }
       }
      ]
