@@ -191,6 +191,28 @@ The contract test (`test_dashboard_adapter_contract.py`) parametrizes its
 invariants over `backends.adapters()`, so a new adapter is covered by it the
 moment it registers; its own response parsing goes in `test_dashboard_<type>.py`.
 
+### Adapter goldens
+
+`tests/golden/adapters/<type>/` holds, per dashboard adapter, the backend
+entry it is built from (`config.json`), a scripted server (`routes.json`,
+answered at the `urlopen` boundary by `helpers.wire.FakeWire`, so the raw SQL
+and LogsQL transports are covered too) and the recorded answers
+(`expected/<scenario>.json`: what the adapter returned *and* the requests it
+made). `tests/unit/test_dashboard_goldens.py` runs one fixed scenario list
+(status, the search variants, the detail, metrics and logs where declared,
+the error taxonomy) over `backends.adapters()`; a new adapter fails until its
+fixtures exist, and a change in an answer or a request fails with a diff.
+
+- Record or refresh: `UPDATE_GOLDEN=1 uv run --extra dev pytest tests/unit/test_dashboard_goldens.py`.
+- The canned bodies come from `seed_responses.py` (the shapes the adapter
+  tests recorded against real backends, re-based onto one shared turn). To
+  capture a real backend instead, run the dashboard with
+  `HERMES_OTEL_RECORD_HTTP=<dir>` and read `<dir>/exchanges.jsonl`
+  (credentials are masked; ClickHouse and VictoriaLogs post through their
+  own transports and are not captured).
+- A refactor PR never changes an `expected/` file silently: when it must,
+  the PR description lists every changed fixture and why.
+
 ## Adding a new backend
 
 1. Add the resolver in `tracer.py` (for now; this will move to
