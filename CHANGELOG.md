@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.29.0](https://github.com/briancaffey/hermes-otel/compare/hermes-otel-v1.28.0...hermes-otel-v1.29.0) (2026-10-13)
+
+
+### Features
+
+* **dashboard:** cost and tokens per agent: a by-agent table on the trace detail, sub-agent totals on the cards ([#447](https://github.com/briancaffey/hermes-otel/issues/447)) ([#463](https://github.com/briancaffey/hermes-otel/issues/463)) ([c4518b0](https://github.com/briancaffey/hermes-otel/commit/c4518b0727181d71d2c67abac9bfd8273ca74492))
+
 ## [1.28.0](https://github.com/briancaffey/hermes-otel/compare/hermes-otel-v1.27.1...hermes-otel-v1.28.0) (2026-10-13)
 
 
