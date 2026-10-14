@@ -7,8 +7,8 @@
 
 For the working tree and for ``--base``, in turn: install that side's
 ``hermes_otel/`` package into the profile's plugin directory (the original is
-backed up and restored afterwards), run the turn-batch prompts through a real
-Hermes, score every telemetry source with ``check_batch.py`` (live store and
+backed up and restored afterwards), run the scenario harness's cli turns through a real
+Hermes, score every telemetry source with ``scenarios/check.py`` (live store and
 each configured backend through the plugin's own query CLI), and dump the live
 store's spans, metric names and logs for the batch in a normalised form. Then
 diff the two sides.
@@ -41,7 +41,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent.parent
-TURN_BATCH = REPO / "scripts" / "turn_batch"
+SCENARIOS = REPO / "scripts" / "scenarios"
 DEFAULT_PROMPTS = "shell-echo,no-tools,missing-file,multi-tool"
 
 # Attribute values that do not depend on what the model said or how long it
@@ -87,7 +87,7 @@ IDENTITY_KEYS = frozenset(
 PRESERVE_IN_PLUGIN_DIR = (".install-metadata.json", "config.yaml", ".env", "debug.log")
 
 
-# ── profile plumbing (same rules as turn_batch) ────────────────────────
+# ── profile plumbing (same rules as scripts/scenarios) ─────────────────
 
 
 def profile_home(profile: str) -> Path:
@@ -99,14 +99,9 @@ def profile_home(profile: str) -> Path:
     return base if profile in ("", "default") else base / "profiles" / profile
 
 
-def batches_root() -> Path:
-    """Where run_batch.py writes ``<token>/runs.json``."""
-    base = (
-        Path(os.environ["HERMES_HOME"]).expanduser()
-        if os.environ.get("HERMES_HOME")
-        else Path.home() / ".hermes"
-    )
-    return base / "turn_batches"
+def batches_root(profile: str) -> Path:
+    """Where scripts/scenarios/run.py writes ``<token>/runs.json``."""
+    return profile_home(profile) / "scenario_runs"
 
 
 # ── materialising one side's package ───────────────────────────────────
@@ -193,11 +188,13 @@ def run_batch(
 ) -> Path:
     cmd = [
         sys.executable,
-        str(TURN_BATCH / "run_batch.py"),
+        str(SCENARIOS / "run.py"),
         "--profile",
         profile,
         "--token",
         token,
+        "--out",
+        str(batches_root(profile) / token),
         "--only",
         prompts,
     ]
@@ -205,16 +202,16 @@ def run_batch(
         cmd += ["--", *hermes_args]
     with log.open("w", encoding="utf-8") as fh:
         subprocess.run(cmd, stdout=fh, stderr=subprocess.STDOUT, check=False)
-    manifest = batches_root() / token / "runs.json"
+    manifest = batches_root(profile) / token / "runs.json"
     if not manifest.exists():
-        raise SystemExit(f"run_batch produced no manifest at {manifest}; see {log}")
+        raise SystemExit(f"scenarios/run.py produced no manifest at {manifest}; see {log}")
     return manifest
 
 
 def check_batch(manifest: Path, wait: float, log: Path) -> Dict[str, Any]:
     cmd = [
         sys.executable,
-        str(TURN_BATCH / "check_batch.py"),
+        str(SCENARIOS / "check.py"),
         "--manifest",
         str(manifest),
         "--wait",
@@ -230,9 +227,10 @@ def check_batch(manifest: Path, wait: float, log: Path) -> Dict[str, Any]:
 
 
 def _marker_id(token: str, spans: Iterable[Dict[str, Any]]) -> Optional[str]:
-    # run_batch appends "(batch marker: <token>-<id>)" to every prompt; the
-    # id itself may contain dashes, so the closing parenthesis delimits it.
-    tagged = re.compile(r"batch marker: " + re.escape(token) + r"-([a-z0-9][a-z0-9-]*)\)")
+    # scenarios/run.py appends "(scenario marker: <token>-<id>)" to every
+    # prompt; the id itself may contain dashes, so the closing parenthesis
+    # delimits it.
+    tagged = re.compile(r"scenario marker: " + re.escape(token) + r"-([a-z0-9][a-z0-9-]*)\)")
     loose = re.compile(re.escape(token) + r"-([a-z0-9][a-z0-9-]*)")
     for pat in (tagged, loose):
         for sp in spans:
@@ -289,10 +287,14 @@ def dump_live(profile: str, token: str, ignore: Iterable[str]) -> Dict[str, Any]
 
 
 def _matrix(report: Dict[str, Any]) -> Dict[str, str]:
-    """``{"<prompt>/<source>": PASS|FAIL|SKIP|...}`` from a check_batch report."""
+    """``{"<prompt>/<source>": PASS|FAIL|SKIP|...}`` from a scenarios/check.py
+    report (a turn's cells, or a pre-harness report's per-run cells)."""
     out: Dict[str, str] = {}
     for run in report.get("runs", []):
-        for source, cell in (run.get("sources") or {}).items():
+        cells: Dict[str, Any] = dict(run.get("sources") or {})
+        for turn in run.get("turns") or []:
+            cells.update(turn.get("sources") or {})
+        for source, cell in cells.items():
             findings = cell.get("findings") or []
             verdict = (
                 "FAIL" if any(f[0] == "FAIL" for f in findings) else (cell.get("verdict") or "PASS")

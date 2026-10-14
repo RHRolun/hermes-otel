@@ -58,7 +58,7 @@ Install Playwright's browser once: `uv run --with playwright playwright install 
 
 ### The workload (fixed, marked, small)
 
-Four prompts from `scripts/turn_batch/prompts.yaml`, run in series through
+Four scenarios from `scripts/scenarios/scenarios.yaml`, run in series through
 `hermes -p <profile> chat -Q --yolo -q` (not `-z`: a one-shot run swallows
 Hermes's stderr, which the batch keeps per turn). Each carries a unique marker `<token>-<id>` in its text, so every
 source can be asked for exactly that turn:

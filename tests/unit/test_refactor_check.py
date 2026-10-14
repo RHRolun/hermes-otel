@@ -65,7 +65,7 @@ class TestNormalise:
             _span(
                 "agent",
                 "r",
-                **{"input.value": "echo R1-shell-echo-out (batch marker: R1-shell-echo)"},
+                **{"input.value": "echo R1-shell-echo-out (scenario marker: R1-shell-echo)"},
             )
         ]
         assert rc._marker_id("R1", spans) == "shell-echo"

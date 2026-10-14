@@ -282,7 +282,7 @@ literal the registry does not know.
 Golden fixtures prove the Python output is unchanged; `make refactor-check`
 proves a real Hermes turn still lands in a real backend. It installs the
 base ref's `hermes_otel/` into the profile's plugin directory, runs the
-turn-batch prompts, scores every source with `check_batch.py`, dumps the
+scenario harness's cli turns, scores every source with `scripts/scenarios/check.py`, dumps the
 live store, then does the same with the working tree and diffs the *shape*
 of the telemetry (span names, parentage, status, attribute keys, the
 run-stable values) plus the check matrices. Model output, durations, tokens

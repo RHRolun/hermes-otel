@@ -7,7 +7,7 @@
         --source lgtm-local --source openobserve-local --profile minimal --batch B261006-120000
 
 The plan this implements is .claude/skills/hermes-otel-dashboard-verify/SKILL.md.
-In short: a fixed, marked workload runs through Hermes (scripts/turn_batch),
+In short: a fixed, marked workload runs through Hermes (scripts/scenarios),
 the plugin's live store is the oracle, every backend answer through the plugin
 API is compared with it (S/T/M/L checks), then headless Chromium drives the
 real dashboard tab and compares what the page shows with what the API said
@@ -35,7 +35,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent.parent
-TURN_BATCH = ROOT / "scripts" / "turn_batch"
+SCENARIOS = ROOT / "scripts" / "scenarios"
 sys.path.insert(0, str(ROOT))
 from hermes_otel import semconv  # noqa: E402
 from hermes_otel.query_cli import otlp_attrs_to_dict  # noqa: E402
@@ -126,8 +126,8 @@ class Host:
 def load_prompts() -> Dict[str, Dict[str, Any]]:
     import yaml
 
-    doc = yaml.safe_load((TURN_BATCH / "prompts.yaml").read_text())
-    return {p["id"]: p for p in doc.get("prompts", [])}
+    doc = yaml.safe_load((SCENARIOS / "scenarios.yaml").read_text())
+    return {p["id"]: p for p in doc.get("scenarios", doc.get("prompts", []))}
 
 
 def batch_dir(token: str) -> Path:
@@ -136,13 +136,15 @@ def batch_dir(token: str) -> Path:
         if os.environ.get("HERMES_HOME")
         else Path.home() / ".hermes"
     )
-    return base / "turn_batches" / token
+    return base / "scenario_runs" / token
 
 
 def run_batch(profile: str, only: List[str], token: str) -> Path:
     cmd = [
         sys.executable,
-        str(TURN_BATCH / "run_batch.py"),
+        str(SCENARIOS / "run.py"),
+        "--out",
+        str(batch_dir(token)),
         "--profile",
         profile,
         "--only",
@@ -1446,7 +1448,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument(
         "--prompts",
         default=",".join(DEFAULT_PROMPTS),
-        help="comma-separated prompt ids from scripts/turn_batch/prompts.yaml",
+        help="comma-separated scenario ids from scripts/scenarios/scenarios.yaml",
     )
     ap.add_argument(
         "--settle",

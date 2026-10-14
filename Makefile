@@ -17,9 +17,9 @@ banner:
 	@python3 -c 'import struct,sys; d=open("docs/catalog-banner.png","rb").read(24); w,h=struct.unpack(">II", d[16:24]); print("docs/catalog-banner.png:", w, "x", h, "px,", len(open("docs/catalog-banner.png","rb").read())//1024, "KB"); sys.exit(0 if w==2*h else 1)'
 
 # ── Live before/after check for refactor PRs (#410) ───────────────────
-# Runs the turn-batch prompts through a real Hermes twice, once with BASE's
+# Runs the scenario harness's cli turns through a real Hermes twice, once with BASE's
 # package installed in the profile's plugin dir and once with the working
-# tree's, scores every telemetry source with check_batch.py, and diffs the
+# tree's, scores every telemetry source with scenarios/check.py, and diffs the
 # shape of what landed in the live store. Needs the profile (default
 # `minimal`) with the plugin installed, a model it can call and the backend
 # in its hermes_otel.yaml answering. ~5 min for four prompts × two sides.
@@ -28,6 +28,36 @@ PROFILE ?= minimal
 .PHONY: refactor-check
 refactor-check:
 	uv run --extra dev python scripts/refactor_check/refactor_check.py --base $(BASE) --profile $(PROFILE)
+
+# ── Scenario harness (#278) ────────────────────────────────────────────
+# Real Hermes runs with telemetry expectations (scripts/scenarios/README.md).
+# Both targets refresh the harness profile from this checkout (model from
+# MODEL_FROM's config.yaml, backends from BACKENDS_FROM's hermes_otel.yaml;
+# BACKENDS_FROM= for the live store only) and check every source; a source
+# that is down is skipped. `make scenarios`: the quick suite (cli + resume
+# turns), a few minutes. `make scenarios-full`: every mode (gateway,
+# approvals, cron, kanban across two profiles; SECOND_MODEL_ARGS gives the
+# second profile its own model). ONLY=id,id runs just those scenarios;
+# SCENARIO_ARGS passes more flags to run.py.
+SCENARIO_PROFILE ?= scenarios
+SCENARIO_PROFILE_B ?= scenarios-b
+MODEL_FROM ?= default
+BACKENDS_FROM ?= default
+SECOND_MODEL_ARGS ?=
+ONLY ?=
+SCENARIO_ARGS ?=
+SCENARIO_TOKEN := S$(shell date +%y%m%d-%H%M%S)
+SCENARIO_RUNS = $(or $(HERMES_HOME),$(HOME)/.hermes)/profiles/$(SCENARIO_PROFILE)/scenario_runs/$(SCENARIO_TOKEN)
+.PHONY: scenarios scenarios-full
+scenarios:
+	uv run --extra dev python scripts/scenarios/setup_profile.py --profile $(SCENARIO_PROFILE) --model-from $(MODEL_FROM) $(if $(BACKENDS_FROM),--backends-from $(BACKENDS_FROM))
+	-uv run --extra dev python scripts/scenarios/run.py --profile $(SCENARIO_PROFILE) --suite quick --token $(SCENARIO_TOKEN) $(if $(ONLY),--only $(ONLY)) $(SCENARIO_ARGS)
+	uv run --extra dev python scripts/scenarios/check.py --manifest $(SCENARIO_RUNS)/runs.json
+
+scenarios-full:
+	uv run --extra dev python scripts/scenarios/setup_profile.py --profile $(SCENARIO_PROFILE) --model-from $(MODEL_FROM) $(if $(BACKENDS_FROM),--backends-from $(BACKENDS_FROM)) --second-profile $(SCENARIO_PROFILE_B) $(SECOND_MODEL_ARGS)
+	-uv run --extra dev python scripts/scenarios/run.py --profile $(SCENARIO_PROFILE) --suite full --token $(SCENARIO_TOKEN) $(if $(ONLY),--only $(ONLY)) $(SCENARIO_ARGS)
+	uv run --extra dev python scripts/scenarios/check.py --manifest $(SCENARIO_RUNS)/runs.json
 
 # ── The CI gate, locally ───────────────────────────────────────────────
 # Mirrors .github/workflows/test.yml job for job: lint (lockfile, ruff,

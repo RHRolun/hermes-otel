@@ -88,7 +88,7 @@ Board health is metrics, not spans:
 3. It checks that every card's run is one trace, and that each worker root names its own profile and model.
 4. It deletes the profiles it created.
 
-The swarm's synthesizer card asks for the `humanizer` skill. In a profile without it, that worker exits before its first turn, and the report says so with the worker's last output. Its run still has claim and spawn in one trace, but no turn to join. For delegation and MoA turns, see the multi-agent scenarios in the [turn batch](/development/turn-batch#multi-agent-scenarios).
+The swarm's synthesizer card asks for the `humanizer` skill. In a profile without it, that worker exits before its first turn, and the report says so with the worker's last output. Its run still has claim and spawn in one trace, but no turn to join. For delegation and MoA turns, see the multi-agent scenarios in the [scenario harness](/development/scenarios#multi-agent-scenarios).
 
 ```bash
 docker compose -f docker-compose/jaeger/docker-compose.yaml up -d

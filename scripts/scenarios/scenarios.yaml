@@ -1,0 +1,354 @@
+# The scenario library for scripts/scenarios (run.py drives, check.py reads back).
+#
+# Each scenario is a real Hermes run that exercises a known slice of the hook
+# contract; `expect:` says what its trace (and correlated logs) must show in
+# every source, `expect_run:` what must hold across its turns. README.md has
+# the full key reference and the hook coverage table.
+#
+#   mode      cli (default) | resume | gateway | cron | kanban
+#   suite     quick (default; `make scenarios`) | full (`make scenarios-full`
+#             adds these) | extra (only by --only or --suite extra/all)
+#   prompt    one turn; `turns:` a list for resume/gateway (a string, or
+#             {prompt, expect} to override expectations for that turn)
+#   config    deep-merged into the profile's config.yaml for this scenario
+#   otel      deep-merged into the profile's hermes_otel.yaml for this scenario
+#   enable_toolsets / hermes_args    as in the old turn batch
+#   sessions, concurrency, approval  gateway only
+#   cron: {model, provider}          cron only (pins the job's model)
+#   kanban: {profiles: [a, b]}       kanban only (one card per profile)
+#
+# Placeholders: {marker} (the turn's marker, also appended to every prompt as
+# "(scenario marker: …)"), {token} (the run token), {workdir} (a scratch
+# directory; cli turns run with it as their CWD).
+
+profile: scenarios
+
+suites:
+  quick: [quick]
+  full: [quick, full]
+  extra: [extra]
+
+scenarios:
+  # ── Turn shapes (cli) ──────────────────────────────────────────────────
+  - id: shell-echo
+    why: one terminal tool call; the simplest full turn (agent → llm → api → tool)
+    prompt: "Run exactly this shell command and reply with only its output: echo {marker}-out"
+    expect:
+      status: ok
+      llm_calls_min: 1
+      tools_min: 1
+      tool_names_any: [terminal]
+      output_contains: "{marker}-out"
+      # transform_terminal_output / transform_llm_output leave these behind
+      span_attrs_any: {hermes.terminal.output.chars: "", hermes.llm.output.chars: ""}
+      logs_min: 3
+      log_levels_any: [INFO]
+
+  - id: no-tools
+    why: a turn with no tool call at all; only llm and api spans
+    prompt: "Reply with exactly this text and nothing else: {marker}-plain"
+    expect:
+      status: ok
+      llm_calls_min: 1
+      tools_max: 0
+      output_contains: "{marker}-plain"
+      logs_min: 1
+
+  - id: file-roundtrip
+    why: file toolset write then read; two tool spans of different tools
+    prompt: "Write the text 'hello {marker}' to a new file at {workdir}/{token}.txt, then read that file back and reply with its exact contents."
+    expect:
+      status: ok
+      tools_min: 2
+      tool_names_any: [write, read, file]
+      output_contains: "hello {marker}"
+      logs_min: 3
+
+  - id: missing-file
+    why: a tool that fails while the turn succeeds; error text in the tool output
+    prompt: "Read the file /nonexistent/{token}/missing.txt and reply with the exact error message you got, then the text {marker}-done."
+    expect:
+      status: ok
+      tools_min: 1
+      tool_names_any: [read, file, terminal]
+      logs_min: 2
+
+  - id: shell-nonzero
+    why: a shell command with a non-zero exit code
+    prompt: "Run exactly this shell command and reply with only its output: ls /nonexistent/{token} 2>&1; echo {marker}-exit=$?"
+    expect:
+      status: ok
+      tools_min: 1
+      tool_names_any: [terminal]
+      output_contains: "{marker}-exit="
+      logs_min: 3
+
+  - id: multi-tool
+    why: several tool calls in one turn, so more than one api round-trip
+    prompt: "Run these three shell commands one at a time, each as its own separate tool call, then reply with the three outputs: (1) echo {marker}-one (2) echo {marker}-two (3) echo {marker}-three"
+    expect:
+      status: ok
+      llm_calls_min: 2
+      tools_min: 3
+      tool_names_any: [terminal]
+      output_contains: "{marker}-three"
+      logs_min: 6
+
+  - id: parallel-tools
+    why: several tool calls issued in one model response; one tool span per call, each with its own call id, all after the same api.* span
+    prompt: "Make all three of these terminal tool calls together in your next single response, not one per response: (1) echo {marker}-p1 (2) echo {marker}-p2 (3) echo {marker}-p3. Then reply with the three outputs."
+    expect:
+      status: ok
+      tools_min: 3
+      tool_names_any: [terminal]
+      tools_per_response_min: 2
+      span_attrs_any: {gen_ai.tool.call.id: ""}
+
+  - id: long-output
+    why: a tool result far above preview_max_chars, to see truncation land intact
+    prompt: "Run exactly this shell command and reply with only the last line of its output: seq 1 400 | sed 's/^/{marker}-line-/'"
+    expect:
+      status: ok
+      tools_min: 1
+      tool_names_any: [terminal]
+      logs_min: 3
+
+  - id: web-fetch
+    why: the web toolset; a network-bound tool span
+    prompt: "Use the web fetch tool on https://example.com/ and reply with the page's title text followed by {marker}-web."
+    expect:
+      status: ok
+      tools_min: 1
+      tool_names_any: [web, fetch, extract]
+      logs_min: 2
+
+  - id: skill-load
+    why: loading a skill opens a skill.<name> span for the rest of the turn
+    prompt: "Using the skills tool, view the skill named systematic-debugging, then reply with its first heading and the text {marker}-skill."
+    expect:
+      status: ok
+      tools_min: 1
+      span_names_any: [skill.systematic-debugging]
+      logs_min: 2
+
+  # ── Sessions (resume) ──────────────────────────────────────────────────
+  - id: resume-three-turns
+    mode: resume
+    why: three turns on one session id across three processes (`chat -r`); turn numbering continues, each turn is its own trace
+    turns:
+      - "Remember the word {marker}-alpha. Reply with only the word ok."
+      - "Reply with only the text {marker}-two."
+      - "Reply with only the text {marker}-three."
+    expect:
+      status: ok
+      llm_calls_min: 1
+    expect_run:
+      same_session: true
+      traces_distinct: true
+      turn_numbers: [1, 2, 3]
+
+  # ── Logs, events and content (cli, with otel overlays) ─────────────────
+  - id: events-only
+    why: "logs.capture off, logs.events on: the turn exports structured hermes.* / gen_ai.* events and no stdlib log lines"
+    otel:
+      logs: {capture: false, events: {enabled: true}}
+    prompt: "Run exactly this shell command and reply with only its output: echo {marker}-ev"
+    expect:
+      status: ok
+      tools_min: 1
+      events_min: 2
+      logs_only_events: true
+
+  - id: content-off
+    why: "content_capture: off records no prompt, tool output or response text, only metadata (shell commands are metadata and stay, see /configuration/privacy)"
+    otel:
+      content_capture: "off"
+    prompt: "Run exactly this shell command and reply with only its output: echo {marker}-$((40+2))"
+    expect:
+      status: ok
+      tools_min: 1
+      attrs_absent: [input.value, output.value, gen_ai.input.messages, gen_ai.output.messages]
+      text_absent: ["{marker}-42"]
+
+  - id: content-preview
+    why: "content_capture: preview clips every prompt and response to preview_max_chars"
+    otel:
+      content_capture: preview
+      preview_max_chars: 200
+    prompt: "Run exactly this shell command and reply with only the last line of its output: seq 1 300 | sed 's/^/{marker}-pv-/'"
+    expect:
+      status: ok
+      tools_min: 1
+      attr_max_len: {input.value: 260, output.value: 260}
+
+  - id: content-full
+    why: "content_capture: full (the default) keeps the complete prompt and response on every api.* span"
+    otel:
+      content_capture: full
+    prompt: "Run exactly this shell command and reply with only its output: echo {marker}-full"
+    expect:
+      status: ok
+      tools_min: 1
+      span_attrs_any: {gen_ai.input.messages: "{marker}", gen_ai.output.messages: ""}
+
+  - id: redaction
+    why: a secret-shaped string in a tool's output is masked on every exported log record and event (Hermes's redactor); span content is not redacted, by design, so only logs are checked
+    otel:
+      logs: {events: {enabled: true}}
+    prompt: "Run exactly this shell command and reply with only its output: printf '{marker} OPENAI_API_KEY=sk-proj-%s%s\\n' Zq8vN3xT7bLw2KcR9mYp4H dJ6sFg1AeU0oXiQ5tV"
+    expect:
+      status: ok
+      tools_min: 1
+      events_min: 1
+      logs_text_absent: ["sk-proj-Zq8vN3xT7bLw2KcR9mYp4HdJ6sFg1AeU0oXiQ5tV"]
+
+  # ── Sub-agents and API errors (cli) ────────────────────────────────────
+  - id: delegate-one
+    suite: full
+    why: one delegate_task call; a subagent.* span, the child's agent root rejoined under it, the child's tokens rolled up
+    enable_toolsets: [delegation]
+    prompt: "Use the delegate_task tool once with one task: run 'echo {marker}-child' in the terminal and return the output. Wait for it and reply with what it returned. Do not change any configuration."
+    expect:
+      status: ok
+      span_prefix_count_min: {"subagent.": 1}
+      subagent_roots_min: 1
+      agent_depth_min: 2
+      span_attrs_any: {hermes.subagent.child_session_id: ""}
+
+  - id: api-error-fatal
+    suite: full
+    why: the provider is unreachable for the whole turn; api_request_error fires, the root ends in error, nothing is left open
+    expect_exit: nonzero
+    known_issue: "#467"   # Hermes fires no on_session_end on this path; the root ends OK at finalize
+    config:
+      model: {base_url: "http://127.0.0.1:9/v1"}
+      agent: {api_max_retries: 1, auto_recovery_cycles: 0}
+    prompt: "Reply with only the text {marker}-never."
+    expect:
+      status: error
+      span_attrs_any: {hermes.turn.final_status: ""}
+
+  # ── The gateway (API server platform) ──────────────────────────────────
+  - id: gateway-five-sessions
+    mode: gateway
+    suite: full
+    why: five sessions, two turns each, submitted at once to one gateway process; every turn its own trace, numbered per session, no log line attributed to another session
+    sessions: 5
+    concurrency: 5
+    turns:
+      - "Run exactly this shell command and reply with only its output: echo {marker}-gw"
+      - "Reply with only the text {marker}-again."
+    expect:
+      status: ok
+      llm_calls_min: 1
+      root_attrs: {hermes.platform: api_server}
+    expect_run:
+      sessions_distinct: 5
+      traces_distinct: true
+      turn_numbers: [1, 2]
+      no_cross_session_logs: true
+      log_attribution_in: [context, session_tag, single_session]
+
+  - id: approval-granted
+    mode: gateway
+    suite: full
+    why: a command Hermes gates (a recursive rm of a name that does not exist, run in the scratch workdir) waits for approval, answered "once" over /v1/runs/{id}/approval; approval.* span with the choice, the tool runs
+    approval: once
+    prompt: "Run exactly this shell command in the terminal, as-is, and reply with its output: rm -r scenario-scratch-{token}-g; echo {marker}-granted"
+    expect:
+      status: ok
+      span_names_any: [approval.]
+      span_attrs_any: {hermes.approval.choice: once, hermes.tool.outcome: completed}
+
+  - id: approval-denied
+    mode: gateway
+    suite: full
+    why: the same request answered "deny"; the approval span says so and the tool is blocked, the turn still ends ok
+    approval: deny
+    prompt: "Run exactly this shell command in the terminal, as-is, and reply with its output: rm -r scenario-scratch-{token}-d; echo {marker}-denied. If it is not allowed, reply with the text {marker}-refused."
+    expect:
+      status: ok
+      span_names_any: [approval.]
+      span_attrs_any: {hermes.approval.choice: deny}
+
+  - id: approval-timeout
+    mode: gateway
+    suite: full
+    why: the request is left unanswered until approvals.timeout (20 s in the harness profile); the approval span records the timeout
+    approval: timeout
+    prompt: "Run exactly this shell command in the terminal, as-is, and reply with its output: rm -r scenario-scratch-{token}-t; echo {marker}-late. If it is not allowed, reply with the text {marker}-refused."
+    expect:
+      status: ok
+      span_names_any: [approval.]
+      span_attrs_any: {hermes.approval.timed_out: "True"}
+
+  # ── Cron and kanban (#452) ─────────────────────────────────────────────
+  - id: cron-job
+    mode: cron
+    suite: full
+    why: a one-shot cron job fired by the scheduler; a cron root with the job id and trigger
+    prompt: "Run exactly this shell command and reply with only its output: echo {marker}-cron"
+    expect:
+      status: ok
+      tools_min: 1
+      root_attrs: {hermes.turn.trigger: cron}
+      span_attrs_any: {hermes.cron.job_id: ""}
+
+  - id: kanban-two-profiles
+    mode: kanban
+    suite: full
+    why: two profiles (setup_profile.py --second-profile) each work one card from a scratch board; one trace per run, the worker roots name different profiles (and models, when the second profile has its own)
+    kanban:
+      profiles: [scenarios, scenarios-b]
+    prompt: "Run exactly this shell command: echo {marker}-kb. Then call kanban_complete with the command's output as the summary."
+    expect:
+      span_names_any: [kanban.]
+      output_contains: "{marker}-kb"
+    expect_run:
+      traces_distinct: true
+      distinct_root_attr_min: {hermes.profile: 2}
+
+  # ── Extra: costlier fleet shapes (#399), run with --suite extra ────────
+  - id: delegation-batch
+    suite: extra
+    why: one delegate_task call with two tasks; one subagent.* span per task, each child root rejoined
+    enable_toolsets: [delegation]
+    prompt: "Use the delegate_task tool once with two tasks in one batch: task 1, run 'echo {marker}-a' in the terminal; task 2, run 'echo {marker}-b' in the terminal. Wait for both and reply with both outputs. Do not change any configuration."
+    expect:
+      status: ok
+      span_prefix_count_min: {"subagent.": 2}
+      subagent_roots_min: 2
+      agent_depth_min: 2
+
+  - id: delegation-nested
+    suite: extra
+    why: an orchestrator child that delegates to a leaf; a depth-3 agent tree in one trace
+    enable_toolsets: [delegation]
+    config:
+      delegation:
+        max_spawn_depth: 2
+    prompt: "Use delegate_task with role 'orchestrator' for one task: the orchestrator must itself call delegate_task to give one leaf worker the job of running 'echo {marker}-n' in the terminal, then return the worker's output. Reply with what the orchestrator returns. Do not change any configuration."
+    expect:
+      status: ok
+      span_prefix_count_min: {"subagent.": 2}
+      subagent_roots_min: 2
+      agent_depth_min: 3
+
+  - id: moa-turn
+    suite: extra
+    why: a Mixture-of-Agents turn (two references and the aggregator on NVIDIA's hosted model; needs NVIDIA_API_KEY in the profile's .env); reference and aggregator calls as auxiliary api.* spans
+    hermes_args: [--provider, moa, -m, cheap]
+    config:
+      moa:
+        presets:
+          cheap:
+            enabled: true
+            reference_models:
+              - {provider: nvidia, model: "nvidia/nemotron-3-super-120b-a12b"}
+              - {provider: nvidia, model: "nvidia/nemotron-3-super-120b-a12b"}
+            aggregator: {provider: nvidia, model: "nvidia/nemotron-3-super-120b-a12b"}
+    prompt: "In one sentence, name a prime number between 10 and 20. Include the text {marker}-moa in your reply."
+    expect:
+      status: ok
+      attr_values_min:
+        hermes.auxiliary.task: {moa_reference: 2, moa_aggregator: 1}

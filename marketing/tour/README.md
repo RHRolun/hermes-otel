@@ -10,7 +10,7 @@ marketing/tour/
   DESIGN.md          brand brief for this piece
   SCRIPT.md          locked narration, one sentence per line
   STORYBOARD.md      scene list and transitions
-  prompts.yaml       the workload replayed against every backend (turn_batch format)
+  prompts.yaml       the workload replayed against every backend (scenario-file format)
   capture/           Playwright capture of the Hermes dashboard and of each backend's own UI
   tools/             synth_voice.py (TTS → assets/voice), prep_frames.py, prep_clips.py, build_comp.py
   assets/shots/      raw 3200x2000 captures per source (+ manifest.json with the trace ids) — committed
@@ -31,7 +31,7 @@ before the composition can be rendered.
 
 ```bash
 # 1. capture one backend at a time (stack up, configs pointed at it, workload run)
-uv run --extra dev python scripts/turn_batch/run_batch.py --prompts marketing/tour/prompts.yaml --profile minimal --token V261010-<name>
+uv run --extra dev python scripts/scenarios/run.py --scenarios marketing/tour/prompts.yaml --profile minimal --token V261010-<name>
 uv run --with playwright python marketing/tour/capture/dashboard.py --source <name>-local --token V261010-<name>
 uv run --with playwright python marketing/tour/capture/backend.py --source <name>-local
 

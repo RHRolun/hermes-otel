@@ -19,7 +19,7 @@ The suite is organised into four tiers, from fastest/simplest to slowest/most co
 
 Default `pytest` runs unit + integration (no Docker, < 1 second). E2E and smoke are opt-in.
 
-For an end-to-end pass against real backends with predictable turns (traces, metrics and logs read back per source), see [Turn batches](/development/turn-batch).
+For an end-to-end pass against real backends with predictable turns (traces, metrics and logs read back per source), see the [scenario harness](/development/scenarios).
 
 ## Running
 

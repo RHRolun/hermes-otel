@@ -1,15 +1,15 @@
-# Prompt library for scripts/turn_batch/run_batch.py.
+# Workload for scripts/scenarios/run.py (--scenarios marketing/tour/prompts.yaml).
 #
 # Each prompt is one Hermes turn that exercises a known slice of what the
-# plugin captures, so the batch's telemetry is predictable: run_batch.py runs
-# them in series through `hermes -p <profile> chat -Q --yolo -q ...` (never
-# `-z`: a one-shot run disables Python logging, so it exports no logs), and
-# check_batch.py then reads every source (live store + each configured backend)
-# and compares what landed with the `expect:` block.
+# plugin captures, so the run's telemetry is predictable: run.py runs them in
+# series through `hermes -p <profile> chat -Q --yolo -q ...` (never `-z`: a
+# one-shot run disables Python logging, so it exports no logs), and check.py
+# then reads every source (live store + each configured backend) and compares
+# what landed with the `expect:` block.
 #
 # Placeholders: {marker} is "<token>-<id>" (the run token plus the prompt id;
-# the runner also appends "(batch marker: <marker>)" to every prompt so each
-# turn can be found by text in any backend), {token} is the run token,
+# the runner also appends "(scenario marker: <marker>)" to every prompt so
+# each turn can be found by text in any backend), {token} is the run token,
 # {workdir} a scratch directory the runner creates.
 #
 # expect keys (all optional):
