@@ -73,6 +73,17 @@ class TestOnSessionStart:
         attrs = mock_tracer.start_span.call_args[1]["attributes"]
         assert attrs["hermes.cron.job_id"] == "j123"
 
+    def test_cron_job_id_from_the_cron_session_id(self, mock_tracer):
+        """Hermes passes no job id; its scheduler names the session cron_<job>_<stamp>."""
+        on_session_start(session_id="cron_eaa1d152fa2e_20261013_210945", model="m", platform="cron")
+        attrs = mock_tracer.start_span.call_args[1]["attributes"]
+        assert attrs["hermes.cron.job_id"] == "eaa1d152fa2e"
+
+    def test_no_cron_job_id_on_an_ordinary_session(self, mock_tracer):
+        on_session_start(session_id="20261013_210419_e2ebf6", model="m", platform="cli")
+        attrs = mock_tracer.start_span.call_args[1]["attributes"]
+        assert "hermes.cron.job_id" not in attrs
+
     def test_noop_when_disabled(self, disabled_tracer):
         on_session_start(session_id="s1", model="gpt-4", platform="cli")
         disabled_tracer.start_span.assert_not_called()

@@ -68,7 +68,7 @@ The root span is named `agent`, or `cron` when the session kind is a cron job. S
 | `hermes.session.finalize_reason`, `hermes.session.reset_reason` | hermes | string | Set when a still-open root was closed by `on_session_finalize` / `on_session_reset`, with `hermes.turn.final_status` `finalized` / `reset` (optional) |
 | `hermes.link` | hermes | string | On the span **link** from a replacing session's first root to the old session's last root: `previous_session` |
 | `hermes.session_id`, `hermes.session.turn_count`, `hermes.session.duration_s`, `hermes.session.finalize_reason` / `hermes.session.reset_reason` | hermes | mixed | On the **log record** `on_session_finalize` / `on_session_reset` emit (exported with `capture_logs`), not on a span |
-| `hermes.cron.job_id` | hermes | string | Cron job id, `cron` roots only (optional) |
+| `hermes.cron.job_id` | hermes | string | Cron job id, `cron` roots only: from the hook payload, else parsed from the scheduler's `cron_<job id>_<timestamp>` session id (optional) |
 | `hermes.session.is_subagent` | hermes | bool | `true` on a delegated child's own root (optional) |
 | `hermes.subagent.role`, `hermes.subagent.parent_session_id` | hermes | string | On a delegated child's root (optional) |
 

@@ -240,6 +240,15 @@ class TestDetectSessionKind:
     def test_trigger_contains_cron(self):
         assert detect_session_kind("cli", {"trigger": "my_cron"}) == "cron"
 
+    def test_cron_job_id_from_session(self):
+        from hermes_otel.helpers import cron_job_id_from_session
+
+        assert cron_job_id_from_session("cron_eaa1d152fa2e_20261013_210945") == "eaa1d152fa2e"
+        assert cron_job_id_from_session("cron_my_job_20261013_210945") == "my_job"
+        assert cron_job_id_from_session("20261013_210419_e2ebf6") == ""
+        assert cron_job_id_from_session("cron_x") == ""
+        assert cron_job_id_from_session(None) == ""
+
     def test_job_id_present(self):
         assert detect_session_kind("cli", {"job_id": "j123"}) == "cron"
 

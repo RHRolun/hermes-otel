@@ -135,7 +135,7 @@ ATTRIBUTES: Tuple[Attr, ...] = (
     Attr(
         "hermes.cron.job_id",
         "session",
-        "Cron job id, `cron` roots only (optional)",
+        "Cron job id, `cron` roots only: from the hook payload, else parsed from the scheduler's `cron_<job id>_<timestamp>` session id (optional)",
         "agent / cron (turn root)",
     ),
     Attr(

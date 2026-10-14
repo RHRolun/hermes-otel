@@ -589,6 +589,17 @@ def detect_session_kind(platform: Any, kwargs: Dict[str, Any]) -> str:
     return "session"
 
 
+# Hermes's scheduler names a cron run's session ``cron_<job id>_<YYYYmmdd>_<HHMMSS>``
+# (cron/scheduler.py) and passes no job id on on_session_start.
+_CRON_SESSION_RE = re.compile(r"^cron_(?P<job>.+)_\d{8}_\d{6}$")
+
+
+def cron_job_id_from_session(session_id: Any) -> str:
+    """The cron job id embedded in a cron run's session id, or ``""``."""
+    m = _CRON_SESSION_RE.match(str(session_id or ""))
+    return m.group("job") if m else ""
+
+
 def parse_traceparent(value: Any) -> Optional[Tuple[int, int, int]]:
     """``(trace_id, span_id, flags)`` from a W3C ``traceparent`` (version 00), or
     None when it is malformed or names the all-zero (invalid) ids."""

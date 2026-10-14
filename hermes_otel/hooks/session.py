@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional
 
 from .. import log_events as EV
 from ..debug_utils import debug_log, logger
-from ..helpers import detect_session_kind, truncate_string
+from ..helpers import cron_job_id_from_session, detect_session_kind, truncate_string
 from ._common import _emit_event, _fail_open, get_tracer
 from .attributes import (
     _extract_correlation_id,
@@ -94,7 +94,11 @@ def _start_session_span(
     if synthesized:
         attributes["hermes.session.synthesized"] = True
 
-    cron_job_id = extra_kwargs.get("job_id") or extra_kwargs.get("cron_job_id")
+    cron_job_id = (
+        extra_kwargs.get("job_id")
+        or extra_kwargs.get("cron_job_id")
+        or cron_job_id_from_session(session_id)
+    )
     if cron_job_id:
         attributes["hermes.cron.job_id"] = truncate_string(cron_job_id, 200)
 
