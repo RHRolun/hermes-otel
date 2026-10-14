@@ -318,7 +318,7 @@ ATTRIBUTES: Tuple[Attr, ...] = (
     Attr(
         "hermes.turn.number",
         "turn",
-        "1-based index of the user prompt within the session (per process; `hermes -r` restarts at 1).",
+        "1-based index of the user prompt within the session. A session resumed in a new process (`hermes -r`) continues from the user prompts in its conversation; after a context compaction the count can only stay or grow.",
         "Every span",
     ),
     Attr(

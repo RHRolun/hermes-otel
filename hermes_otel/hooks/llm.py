@@ -9,6 +9,7 @@ from .. import log_events as EV
 from ..debug_utils import debug_log
 from ..helpers import (
     coerce_bool,
+    count_user_turns,
     http_status_class,
     query_source_for,
     serialize_full,
@@ -96,7 +97,11 @@ def on_pre_llm_call(
     # One pre_llm_call per user prompt (Hermes fires it before the tool loop),
     # so this is where the turn gets its number. Tool and api spans opened
     # later in the turn pick it up via _turn_attributes.
-    turn_number = tracer.sessions.next_turn(session_id, reset=bool(is_first_turn))
+    turn_number = tracer.sessions.next_turn(
+        session_id,
+        reset=bool(is_first_turn),
+        history_turns=count_user_turns(conversation_history),
+    )
     if session_id:
         _emit_event(
             tracer,

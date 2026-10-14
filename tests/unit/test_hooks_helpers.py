@@ -342,3 +342,20 @@ class TestUsageAttributesReasoning:
             }
         )
         assert "gen_ai.usage.reasoning.output_tokens" not in attrs
+
+
+class TestCountUserTurns:
+    def test_counts_user_messages_only(self):
+        from hermes_otel.helpers import count_user_turns
+
+        convo = [
+            {"role": "system", "content": "s"},
+            {"role": "user", "content": "a"},
+            {"role": "assistant", "content": "b"},
+            {"role": "tool", "content": "c"},
+            {"role": "user", "content": "d"},
+            "not a message",
+        ]
+        assert count_user_turns(convo) == 2
+        assert count_user_turns(None) == 0
+        assert count_user_turns("user") == 0

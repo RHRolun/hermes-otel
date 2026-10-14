@@ -124,6 +124,7 @@ def run_turn(
     task_ids: Optional[Sequence[str]] = None,
     completed: bool = True,
     interrupted: bool = False,
+    history: Sequence[Dict[str, Any]] = (),
 ) -> None:
     """One Hermes turn as the hooks see it.
 
@@ -137,7 +138,7 @@ def run_turn(
         on_pre_llm_call(
             session_id=session_id,
             user_message=user_message,
-            conversation_history=[],
+            conversation_history=list(history),
             is_first_turn=first,
             model=model,
             platform=platform,

@@ -72,6 +72,29 @@ class TestTurnNumberOnSpans:
         _turn("s1", is_first_turn=True)
         assert set(_turn_numbers(exporter.get_finished_spans()).values()) == {1}
 
+    def test_resumed_session_continues_from_its_history(self, inmemory_otel_setup):
+        """``hermes -r`` runs the third turn in a fresh process: the counter is
+        empty, but the conversation Hermes passes holds three user prompts."""
+        exporter, _plugin = inmemory_otel_setup
+        history = [
+            {"role": "user", "content": "one"},
+            {"role": "assistant", "content": "ok"},
+            {"role": "user", "content": "two"},
+            {"role": "assistant", "content": "ok"},
+            {"role": "tool", "content": "x"},
+            {"role": "user", "content": "three"},
+        ]
+        run_turn("s1", first=False, history=history, usage={"total_tokens": 2})
+        assert set(_turn_numbers(exporter.get_finished_spans()).values()) == {3}
+
+    def test_compacted_history_never_lowers_the_count(self, inmemory_otel_setup):
+        exporter, _plugin = inmemory_otel_setup
+        for first in (True, False, False):
+            _turn("s1", is_first_turn=first)
+        exporter.clear()
+        run_turn("s1", first=False, history=[{"role": "user", "content": "summary"}])
+        assert set(_turn_numbers(exporter.get_finished_spans()).values()) == {4}
+
     def test_tool_before_any_llm_call_has_no_turn_attribute(self, inmemory_otel_setup):
         exporter, _plugin = inmemory_otel_setup
         on_pre_tool_call(tool_name="terminal", args={}, task_id="t0", session_id="s1")
@@ -88,6 +111,12 @@ class TestSessionStateTurnCounter:
         assert st.next_turn("s") == 2
         assert st.turn_number("s") == 2
         assert st.next_turn("s", reset=True) == 1
+
+    def test_history_is_a_floor_and_reset_wins(self):
+        st = SessionState()
+        assert st.next_turn("s", history_turns=3) == 3
+        assert st.next_turn("s", history_turns=1) == 4
+        assert st.next_turn("s", reset=True, history_turns=7) == 1
 
     def test_counter_survives_pop_of_the_per_turn_aggregator(self):
         st = SessionState()

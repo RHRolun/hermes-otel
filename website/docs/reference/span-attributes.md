@@ -34,7 +34,7 @@ A test (`tests/unit/test_span_attributes_docs.py`) fails if the code sets an att
 |---|---|---|
 | `openinference.span.kind` | OpenInference | `AGENT` (root, subagent) · `LLM` (`llm.*`, `api.*`) · `TOOL` (`tool.*`) · `GENERAL` (skill, approval, kanban) |
 | `traceloop.span.kind` | Traceloop | The same span kinds in Traceloop's lowercase vocabulary: `agent` (root, subagent) · `tool` (`tool.*`) · `task` (everything else; Traceloop has no LLM kind, model spans are identified by `gen_ai.*`) · `unknown`. Filter on this from openllmetry-aware tools such as `opentelemetry-mcp` (since 1.26.0; earlier releases wrote the OpenInference spelling here, #382) |
-| `hermes.turn.number` | hermes | 1-based index of the user prompt within the session (per process; `hermes -r` restarts at 1). On the root and on every `llm.*` / `api.*` / `tool.*` span of the turn |
+| `hermes.turn.number` | hermes | 1-based index of the user prompt within the session. A session resumed in a new process (`hermes -r`) continues from the user prompts in its conversation; after a context compaction the count can only stay or grow. On the root and on every `llm.*` / `api.*` / `tool.*` span of the turn |
 | `session.id`, `session_id` | OTel / hermes | Hermes session id, on the root and on `llm.*` / `api.*` / `tool.*` / `subagent.*`; `session_id` is the plugin's oldest spelling of the same value, kept for dashboards built on it |
 | `gen_ai.conversation.id` | gen_ai | Same id, gen_ai spelling, wherever `gen_ai.operation.name` is set |
 | `correlation.id` | hermes | A correlation id the host passed on the hook (`correlation_id` / `correlation.id` / `x-correlation-id` …), reused on every span of that session. Hermes 0.21 passes none, so the attribute is absent; group by `session.id` instead |

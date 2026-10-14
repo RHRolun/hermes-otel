@@ -570,6 +570,16 @@ def optional_number(value: Any) -> Optional[float]:
         return None
 
 
+def count_user_turns(conversation: Any) -> int:
+    """User prompts in a conversation (``role == "user"`` messages), or 0 when
+    it is not a list. Hermes passes the turn's whole conversation, current
+    prompt included, to ``pre_llm_call``; after a context compaction it holds
+    fewer, so callers treat the count as a floor."""
+    if not isinstance(conversation, (list, tuple)):
+        return 0
+    return sum(1 for m in conversation if isinstance(m, dict) and m.get("role") == "user")
+
+
 def detect_session_kind(platform: Any, kwargs: Dict[str, Any]) -> str:
     """Classify a run as ``session``, ``cron`` or a host-supplied kind.
 

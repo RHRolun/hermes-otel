@@ -368,20 +368,22 @@ class SessionState:
 
     # ── Turn numbering ───────────────────────────────────────────────────
 
-    def next_turn(self, session_id: str, reset: bool = False) -> int:
+    def next_turn(self, session_id: str, reset: bool = False, history_turns: int = 0) -> int:
         """Advance and return the 1-based turn number for ``session_id``.
 
         Called once per user turn (from ``pre_llm_call``, which Hermes fires
         once per prompt, before the tool loop). ``reset=True`` (Hermes's
         ``is_first_turn``) restarts the count at 1 so a reused session id
-        starts fresh. The counter is process-local: a session resumed in a
-        new process (``hermes -r``) restarts at 1.
+        starts fresh. The counter is process-local, so ``history_turns`` (the
+        user prompts in the turn's conversation, current one included) is a
+        floor: a session resumed in a new process (``hermes -r``) continues
+        its numbering instead of restarting at 1.
         """
         if not session_id:
             return 0
         with self._lock:
             current = 0 if reset else self._turn_counters.get(session_id, 0)
-            turn = current + 1
+            turn = 1 if reset else max(current + 1, int(history_turns or 0))
             self._turn_counters[session_id] = turn
             self._turn_counters.move_to_end(session_id)
             while len(self._turn_counters) > self._MAX_TURN_COUNTERS:
