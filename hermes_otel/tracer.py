@@ -676,6 +676,35 @@ class HermesOTelPlugin:
         self.unregister_turn(session_id)
         return True
 
+    def close_stale_turn(self, session_id: str) -> bool:
+        """Close a root left open by a turn that ended no other way (#467).
+
+        ``close_failed_turn`` covers the one diagnosed cause: every API attempt
+        of the turn failed. Any *other* path that skips ``on_session_end`` —
+        an exception mid-turn, a request the client cancelled, a hook that
+        never fired — leaves the root open just the same, and then the next
+        turn is tracked under the very same ``session:<id>`` key. That drops
+        the open span object from the registry, putting it out of reach of
+        ``end_leftover_children``, ``_finalize_orphan``, the TTL sweep and
+        ``shutdown`` alike: it can never be ended, so it is never exported and
+        the trace stays in progress for good, swallowing every later turn of
+        the session.
+
+        Hermes fires ``pre_llm_call`` once per user prompt, so a root that
+        already carries a turn number when another prompt arrives belongs to
+        the previous turn. Called from ``pre_llm_call`` after
+        ``close_failed_turn``, which labels the cause it knows more precisely.
+        Returns True when a stale root was closed.
+        """
+        ps = self.sessions.peek(session_id)
+        if ps is None or not ps.root_turn_number:
+            return False
+        if not self.spans.has_span(f"session:{session_id}"):
+            return False
+        self._finalize_orphan(session_id, reason="superseded")
+        self.unregister_turn(session_id)
+        return True
+
     def end_leftover_children(self, session_id: str, reason: str) -> int:
         """End every child span still open under ``session_id`` and say why (#477).
 
@@ -705,8 +734,11 @@ class HermesOTelPlugin:
     def _finalize_orphan(self, session_id: str, reason: str = "ttl") -> None:
         """End any still-active spans for a timed-out session.
 
-        Marks the session span (if present) with `hermes.turn.final_status=timed_out`
-        and status OK (per PRD: timeouts must not inflate error rates).
+        Marks the session span (if present) with `hermes.turn.final_status`
+        `timed_out` — or `interrupted` when the gateway stopped the turn, or
+        `superseded` when the next turn closed it — and status OK (per PRD:
+        neither a timeout nor a sweep must inflate error rates). A turn whose
+        API attempts all failed ends `error`.
         """
         # End non-session active spans first (api.*, tool.*, llm.*) so the
         # session span ends last and contains them in the hierarchy.
@@ -728,11 +760,17 @@ class HermesOTelPlugin:
                     error_message=f"turn failed: {failure.get('error.type') or 'API request failed'}",
                 )
             else:
+                if stopped:
+                    final_status = "interrupted"
+                elif reason == "superseded":
+                    # Left open by its own turn, not by a timeout: say so
+                    # rather than blaming the TTL that never fired.
+                    final_status = "superseded"
+                else:
+                    final_status = "timed_out"
                 self.end_span(
                     session_key,
-                    attributes={
-                        "hermes.turn.final_status": "interrupted" if stopped else "timed_out"
-                    },
+                    attributes={"hermes.turn.final_status": final_status},
                     status="ok",
                 )
         # Drop the expired session's parent stack, skill spans, delegation

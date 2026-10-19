@@ -89,6 +89,10 @@ def on_pre_llm_call(
     # close it so this turn gets its own root instead of joining that trace.
     if session_id:
         tracer.close_failed_turn(session_id)
+        # Same hazard, any other cause: a root the previous turn left open
+        # would otherwise be dropped from the registry by this turn's root and
+        # could then never be ended at all. See Tracer.close_stale_turn.
+        tracer.close_stale_turn(session_id)
 
     # hermes fires on_session_start only on the very first turn, but
     # on_session_end fires per turn. On continuation turns (2+) we arrive
@@ -128,6 +132,9 @@ def on_pre_llm_call(
         if not ps.io_captured:
             ps.io["input"] = _preview_for(tracer, "llm_input", user_message) or ""
             ps.io_captured = True
+        # This turn owns the root from here on, so the next prompt can tell a
+        # root this turn left open from one it opened itself.
+        ps.root_turn_number = turn_number
 
     # OpenInference attributes — Phoenix Info panel. The provider is only
     # known once an API call has reported it (continuation turns); the

@@ -63,7 +63,14 @@ _PARENT_STACK: contextvars.ContextVar[Optional[list]] = contextvars.ContextVar(
 )
 
 
-SWEEP_REASONS = ("turn_end", "session_end", "turn_failed", "ttl", "shutdown")
+SWEEP_REASONS = (
+    "turn_end",
+    "session_end",
+    "turn_failed",
+    "superseded",
+    "ttl",
+    "shutdown",
+)
 
 
 def sweep_attributes(reason: str) -> dict:
@@ -72,7 +79,8 @@ def sweep_attributes(reason: str) -> dict:
     ``reason`` is one of :data:`SWEEP_REASONS`: ``turn_end`` (open at
     ``on_session_end``), ``session_end`` (open at finalize / reset),
     ``turn_failed`` (the turn's API attempts all failed and the next turn
-    closed it), ``ttl`` (the orphan sweep) or ``shutdown``.
+    closed it), ``superseded`` (the turn ended no other way and the next
+    turn's prompt closed it), ``ttl`` (the orphan sweep) or ``shutdown``.
     """
     return {"hermes.span.ended_by": "sweep", "hermes.span.sweep_reason": reason}
 

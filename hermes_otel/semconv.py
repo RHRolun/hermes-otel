@@ -227,7 +227,7 @@ ATTRIBUTES: Tuple[Attr, ...] = (
     Attr(
         "hermes.span.sweep_reason",
         "turn",
-        "Why a swept span was ended: `turn_end` (still open at `on_session_end`), `session_end` (at finalize / reset), `turn_failed` (every API attempt of the turn failed and the next turn closed it), `ttl` (the orphan sweep, `root_span_ttl_ms`) or `shutdown`",
+        "Why a swept span was ended: `turn_end` (still open at `on_session_end`), `session_end` (at finalize / reset), `turn_failed` (every API attempt of the turn failed and the next turn closed it), `superseded` (the turn ended no other way and the next turn's prompt closed it), `ttl` (the orphan sweep, `root_span_ttl_ms`) or `shutdown`",
         "tool.* / api.* / llm.* / approval.* / skill.*",
     ),
     Attr(

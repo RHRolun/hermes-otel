@@ -127,6 +127,11 @@ class PerSession:
     # ``hermes.turn.number`` span attribute so any backend can group or filter
     # a session's spans by conversation turn. See SessionState.next_turn.
     turn_number: int = 0
+    # The turn number the open root span belongs to: set once that turn reaches
+    # pre_llm_call, cleared when the root ends. Hermes fires pre_llm_call once
+    # per user prompt, so a root still carrying one when the next prompt
+    # arrives was left open by the previous turn. See Tracer.close_stale_turn.
+    root_turn_number: int = 0
     # Per-call cost statuses from Hermes's pricing (#252) and the sum of the
     # priced calls' USD. The root carries a total only when every call was
     # priced; see cost_rollup.

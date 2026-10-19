@@ -331,6 +331,10 @@ def on_session_end(
     tracer.spans.pop_parent(session_id=session_id)
     tracer.end_span(key, attributes=attributes, status=status)
     tracer.unregister_turn(session_id)
+    if ps is not None:
+        # Ended the ordinary way: the next prompt must not read this as a root
+        # the turn left open (see Tracer.close_stale_turn).
+        ps.root_turn_number = 0
 
     # End of a user-visible unit of work. Flush so the trace is visible in
     # the backend UI immediately rather than after schedule_delay_millis.
