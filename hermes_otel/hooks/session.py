@@ -166,6 +166,18 @@ def _start_session_span(
         session_id=session_id,
         parent=parent_override,
         links=links,
+        # An ordinary turn root is parented above or not at all: a kanban
+        # claim, HERMES_OTEL_TRACEPARENT, or nothing. Without this the None
+        # above is silently replaced by whatever is on the parent stacks,
+        # which is how one session's turn ends up inside another session's
+        # trace.
+        #
+        # A delegated sub-agent is the exception and keeps the ambient
+        # parent: cross-process delegation has only a context to link, no
+        # span object to pass as `parent`, and it joins the parent's trace
+        # by finding the delegation span on the stack. See the
+        # subagent_cross_process golden.
+        inherit_ambient_parent=bool(record),
     )
     tracer.spans.push_parent(span, session_id=session_id)
     tracer.register_turn(session_id)

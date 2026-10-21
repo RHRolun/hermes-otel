@@ -73,6 +73,30 @@ SWEEP_REASONS = (
 )
 
 
+def _is_live(span) -> bool:
+    """Is this span still open, and therefore usable as a parent?
+
+    Unknown objects count as live: the tracker holds whatever the SDK
+    handed it, and a test double without ``is_recording`` must keep
+    behaving the way it did before this check existed.
+    """
+    recording = getattr(span, "is_recording", None)
+    if recording is None:
+        return span is not None
+    try:
+        return bool(recording())
+    except Exception:  # pragma: no cover - a span that cannot answer is not a parent
+        return False
+
+
+def _topmost_live(stack):
+    """The newest span on ``stack`` that has not ended yet, or None."""
+    for span in reversed(stack or []):
+        if _is_live(span):
+            return span
+    return None
+
+
 def sweep_attributes(reason: str) -> dict:
     """The marker set on a span the plugin ended on the operation's behalf (#477).
 
@@ -218,14 +242,24 @@ class SpanTracker:
         Prefers the session-keyed stack (survives thread boundaries).
         Falls back to the ContextVar stack for callers that don't know
         the ``session_id``.
+
+        Spans that have already ended are skipped on both stacks. A
+        reference can outlive its span: the ContextVar pop is best-effort
+        (it may land on a different thread than the push), and the sweep
+        paths end a root while deliberately leaving the ContextVar entry
+        alone -- see ``_finalize_orphan``. Returning a dead span here is
+        worse than returning nothing: the new span inherits the *trace id*
+        of a trace the backend already considers finished, so a later turn
+        disappears into an older one. Observed on cluster-zwtpw, where a
+        chat turn interrupted at 13:46 left a root whose reference adopted
+        two unrelated sessions' turns seven hours later.
         """
         if session_id:
             with self._lock:
-                s = self._session_parent_stacks.get(session_id)
-                if s:
-                    return s[-1]
-        stack = self._parent_stack()
-        return stack[-1] if stack else None
+                live = _topmost_live(self._session_parent_stacks.get(session_id))
+            if live is not None:
+                return live
+        return _topmost_live(self._parent_stack())
 
     def single_active_session(self):
         """``(session_id, root_span)`` when exactly one session has a turn in

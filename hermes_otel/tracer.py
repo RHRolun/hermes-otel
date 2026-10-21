@@ -555,6 +555,7 @@ class HermesOTelPlugin:
         parent: Any = None,
         links: Optional[list] = None,
         sweep_with_turn: bool = True,
+        inherit_ambient_parent: bool = True,
     ):
         """Create and track a new span.
 
@@ -574,6 +575,11 @@ class HermesOTelPlugin:
                    attach at span creation (links can't be added later). Used
                    as the cross-process fallback for sub-agent correlation when
                    a live parent span isn't available to nest under.
+            inherit_ambient_parent: ``False`` means this span takes the
+                        explicit ``parent`` or none at all, never whatever
+                        happens to be on the parent stacks. For a turn root,
+                        which starts its own trace unless something named a
+                        parent for it deliberately.
         """
         if not self._initialized:
             return INVALID_SPAN
@@ -595,9 +601,17 @@ class HermesOTelPlugin:
             # Check for active parent — an explicit ``parent`` wins (sub-agent
             # delegation), otherwise prefer the session-keyed stack so nesting
             # survives hermes' cross-thread hook dispatch.
-            effective_parent = (
-                parent if parent is not None else self.spans.get_current_parent(session_id)
-            )
+            #
+            # A turn root passes inherit_ambient_parent=False and so takes the
+            # explicit parent or none. on_session_start already decides a
+            # root's parent deliberately -- sub-agent delegation, a kanban
+            # claim span, HERMES_OTEL_TRACEPARENT -- and passes None when a
+            # turn should start its own trace. Letting the ambient stack
+            # override that None is how a root ends up inside an unrelated
+            # session's trace.
+            effective_parent = parent
+            if effective_parent is None and inherit_ambient_parent:
+                effective_parent = self.spans.get_current_parent(session_id)
             span_ctx = None
             if effective_parent is not None and hasattr(effective_parent, "get_span_context"):
                 span_ctx = set_span_in_context(effective_parent)
